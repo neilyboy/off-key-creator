@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Off-Key Creator - Karaoke Video Maker</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="icon" href="/static/off-key-creator-logo.png">
+  <style>
+    .step-inactive { opacity: 0.4; pointer-events: none; }
+    input[type="color"] { -webkit-appearance: none; appearance: none; border: none; padding: 0; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div class="max-w-3xl mx-auto px-4 py-8 space-y-6">
+
+    <header class="flex items-center gap-4">
+      <img src="/static/off-key-creator-logo.png" alt="Off-Key Creator" class="w-16 h-16 rounded-xl">
+      <div>
+        <h1 class="text-2xl font-bold tracking-tight">Off-Key Creator</h1>
+        <p class="text-slate-400 text-sm">Turn any song into a karaoke video — separation, lyrics, render.</p>
+      </div>
+    </header>
+
+    <!-- Global error banner -->
+    <div id="error-banner" class="hidden bg-red-900/60 border border-red-700 text-red-200 rounded-lg px-4 py-3 text-sm"></div>
+
+    <!-- ============ Step 1: Upload & Metadata ============ -->
+    <section id="step-upload" class="bg-slate-900 rounded-xl p-6 border border-slate-800">
+      <h2 class="font-semibold text-lg mb-4"><span class="text-indigo-400 mr-2">1</span>Upload &amp; Metadata</h2>
+      <div id="dropzone" class="border-2 border-dashed border-slate-700 rounded-lg p-8 text-center cursor-pointer hover:border-indigo-500 transition">
+        <p class="text-slate-300">Drop an audio file here or <span class="text-indigo-400 underline">browse</span></p>
+        <p class="text-slate-500 text-xs mt-1">MP3 · WAV · FLAC · M4A (max 200 MB)</p>
+        <input type="file" id="audio-input" class="hidden" accept=".mp3,.wav,.flac,.m4a">
+      </div>
+      <div id="upload-status" class="hidden mt-3 text-sm text-slate-400"></div>
+      <div id="metadata-form" class="hidden mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-slate-400 mb-1" for="artist">Artist</label>
+          <input id="artist" type="text" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-slate-400 mb-1" for="title">Title</label>
+          <input id="title" type="text" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500">
+        </div>
+        <button id="btn-metadata" class="sm:col-span-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg py-2 font-medium transition">Confirm Metadata</button>
+      </div>
+    </section>
+
+    <!-- ============ Step 2: Separation ============ -->
+    <section id="step-separate" class="bg-slate-900 rounded-xl p-6 border border-slate-800 step-inactive">
+      <h2 class="font-semibold text-lg mb-4"><span class="text-indigo-400 mr-2">2</span>Vocal Separation</h2>
+      <div class="flex flex-col sm:flex-row gap-3">
+        <select id="separation-model" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+          {% for key, m in separation_models.items() %}
+          <option value="{{ key }}">{{ m.label }}</option>
+          {% endfor %}
+        </select>
+        <button id="btn-separate" class="bg-indigo-600 hover:bg-indigo-500 rounded-lg px-6 py-2 font-medium transition">Separate</button>
+      </div>
+      <div id="separate-progress-wrap" class="hidden mt-4">
+        <div class="flex justify-between text-xs text-slate-400 mb-1">
+          <span id="separate-progress-msg">Queued...</span><span id="separate-progress-pct">0%</span>
+        </div>
+        <div class="h-2 bg-slate-800 rounded-full overflow-hidden">
+          <div id="separate-progress-bar" class="h-full bg-indigo-500 rounded-full transition-all duration-300" style="width:0%"></div>
+        </div>
+      </div>
+      <div id="stem-previews" class="hidden mt-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <p class="text-sm text-slate-400 mb-1">Instrumental</p>
+          <audio id="audio-instrumental" controls class="w-full"></audio>
+        </div>
+        <div>
+          <p class="text-sm text-slate-400 mb-1">Vocals</p>
+          <audio id="audio-vocals" controls class="w-full"></audio>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ Step 3: Transcription & Lyric Review ============ -->
+    <section id="step-transcribe" class="bg-slate-900 rounded-xl p-6 border border-slate-800 step-inactive">
+      <h2 class="font-semibold text-lg mb-4"><span class="text-indigo-400 mr-2">3</span>Transcription &amp; Lyric Review</h2>
+      <div class="flex flex-col sm:flex-row gap-3">
+        <select id="whisper-model" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+          {% for m in whisper_models %}
+          <option value="{{ m }}" {% if m == "small" %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+        </select>
+        <button id="btn-transcribe" class="bg-indigo-600 hover:bg-indigo-500 rounded-lg px-6 py-2 font-medium transition">Transcribe</button>
+      </div>
+      <div id="transcribe-progress-wrap" class="hidden mt-4">
+        <div class="flex justify-between text-xs text-slate-400 mb-1">
+          <span id="transcribe-progress-msg">Queued...</span><span id="transcribe-progress-pct">0%</span>
+        </div>
+        <div class="h-2 bg-slate-800 rounded-full overflow-hidden">
+          <div id="transcribe-progress-bar" class="h-full bg-indigo-500 rounded-full transition-all duration-300" style="width:0%"></div>
+        </div>
+      </div>
+      <div id="lyrics-review" class="hidden mt-5">
+        <p class="text-sm text-slate-400 mb-2">
+          Review checkpoint — fix misheard words or spelling below.
+          <strong class="text-slate-300">Keep the same number of lines</strong> so word timings stay in sync.
+        </p>
+        <textarea id="lyrics-text" rows="12" spellcheck="true"
+          class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 font-mono text-sm leading-6 focus:outline-none focus:border-indigo-500"></textarea>
+        <button id="btn-save-lyrics" class="mt-3 bg-indigo-600 hover:bg-indigo-500 rounded-lg px-6 py-2 font-medium transition">Save Lyrics &amp; Continue</button>
+      </div>
+    </section>
+
+    <!-- ============ Step 4: Video Layout ============ -->
+    <section id="step-layout" class="bg-slate-900 rounded-xl p-6 border border-slate-800 step-inactive">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-lg"><span class="text-indigo-400 mr-2">4</span>Video Layout</h2>
+        <div class="flex gap-2">
+          <button id="btn-export-preset" class="text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg px-3 py-1.5 transition">Export Preset</button>
+          <button id="btn-import-preset" class="text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg px-3 py-1.5 transition">Import Preset</button>
+          <input type="file" id="preset-input" class="hidden" accept=".json">
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-slate-400 mb-1">Resolution</label>
+          <select id="resolution" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+            {% for r in resolutions %}
+            <option value="{{ r }}" {% if r == "1080p" %}selected{% endif %}>{{ r }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm text-slate-400 mb-1">Background</label>
+          <div class="flex items-center gap-3">
+            <select id="bg-type" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+              <option value="color">Solid color</option>
+              <option value="image">Image</option>
+            </select>
+            <input id="bg-color" type="color" value="#0f172a" class="w-10 h-10 rounded-lg bg-slate-800 border border-slate-700 cursor-pointer">
+          </div>
+          <input type="file" id="bg-image-input" accept=".png,.jpg,.jpeg,.webp,.bmp"
+            class="hidden mt-2 w-full text-sm text-slate-400 file:bg-slate-800 file:border-0 file:text-slate-200 file:rounded-lg file:px-3 file:py-1.5 file:mr-3">
+          <p id="bg-image-status" class="hidden text-xs text-emerald-400 mt-1"></p>
+        </div>
+
+        <div class="sm:col-span-2 border-t border-slate-800 pt-4">
+          <label class="inline-flex items-center gap-2 cursor-pointer">
+            <input id="vis-enabled" type="checkbox" class="w-4 h-4 accent-indigo-500">
+            <span class="text-sm">Enable audio visualizer (driven by the instrumental)</span>
+          </label>
+          <div id="vis-options" class="hidden mt-3 grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Type</label>
+              <select id="vis-type" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+                <option value="showwaves">Waveform (showwaves)</option>
+                <option value="showfreqs">Frequency bars (showfreqs)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Color</label>
+              <input id="vis-color" type="color" value="#818cf8" class="w-full h-10 rounded-lg bg-slate-800 border border-slate-700 cursor-pointer">
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Opacity: <span id="vis-opacity-label">100%</span></label>
+              <input id="vis-opacity" type="range" min="0" max="100" value="100" class="w-full accent-indigo-500">
+            </div>
+          </div>
+        </div>
+
+        <div class="sm:col-span-2 border-t border-slate-800 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm text-slate-400 mb-1">Lyric text color (before sung)</label>
+            <input id="sub-text-color" type="color" value="#ffffff" class="w-full h-10 rounded-lg bg-slate-800 border border-slate-700 cursor-pointer">
+          </div>
+          <div>
+            <label class="block text-sm text-slate-400 mb-1">Highlight color (when sung)</label>
+            <input id="sub-highlight-color" type="color" value="#ffa500" class="w-full h-10 rounded-lg bg-slate-800 border border-slate-700 cursor-pointer">
+          </div>
+        </div>
+      </div>
+
+      <button id="btn-render" class="mt-5 w-full bg-emerald-600 hover:bg-emerald-500 rounded-lg py-2.5 font-semibold transition">Render Karaoke Video</button>
+    </section>
+
+    <!-- ============ Step 5: Render & Download ============ -->
+    <section id="step-render" class="bg-slate-900 rounded-xl p-6 border border-slate-800 step-inactive">
+      <h2 class="font-semibold text-lg mb-4"><span class="text-indigo-400 mr-2">5</span>Render &amp; Download</h2>
+      <div id="render-progress-wrap" class="hidden">
+        <div class="flex justify-between text-xs text-slate-400 mb-1">
+          <span id="render-progress-msg">Queued...</span><span id="render-progress-pct">0%</span>
+        </div>
+        <div class="h-2 bg-slate-800 rounded-full overflow-hidden">
+          <div id="render-progress-bar" class="h-full bg-emerald-500 rounded-full transition-all duration-300" style="width:0%"></div>
+        </div>
+      </div>
+      <div id="download-wrap" class="hidden mt-4 text-center">
+        <p id="download-filename" class="text-sm text-slate-400 mb-3"></p>
+        <a id="btn-download" href="#" class="inline-block bg-emerald-600 hover:bg-emerald-500 rounded-lg px-8 py-3 font-semibold transition">Download MP4</a>
+      </div>
+    </section>
+
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

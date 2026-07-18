@@ -1,0 +1,86 @@
+# Off-Key Creator - Self-hosted Karaoke Video Creator
+#
+# Services:
+#   web    - FastAPI app (UI, uploads, WebSocket progress relay)
+#   worker - Celery worker (AI separation, transcription, FFmpeg rendering)
+#   redis  - Message broker / pub-sub channel for progress events
+#
+# ------------------------------------------------------------------
+# GPU ACCELERATION (Nvidia CUDA)
+# ------------------------------------------------------------------
+# This stack defaults to CPU processing. To enable GPU acceleration:
+#
+#   1. Install the NVIDIA Container Toolkit on the host:
+#        https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+#
+#   2. In the Dockerfile, swap the CPU torch install for the CUDA one
+#      (see the comment block in the Dockerfile) and rebuild:
+#        docker compose build --no-cache
+#
+#   3. Uncomment the `deploy:` block under the `worker` service below.
+#
+#   4. Set DEVICE=cuda in the worker's environment (uncomment below).
+# ------------------------------------------------------------------
+
+services:
+  web:
+    build: .
+    container_name: offkey-web
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8120:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATA_DIR=/data
+    volumes:
+      - ./data/uploads:/data/uploads
+      - ./data/models:/data/models
+      - ./data/processed:/data/processed
+      - ./data/output:/data/output
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    container_name: offkey-worker
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=1 --pool=solo
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATA_DIR=/data
+      # Model weight caches - persisted so weights download only once.
+      - HF_HOME=/data/models/huggingface
+      - TORCH_HOME=/data/models/torch
+      - XDG_CACHE_HOME=/data/models/cache
+      # Processing device. Default: cpu.
+      - DEVICE=cpu
+      # --- GPU: comment the line above and uncomment the line below ---
+      # - DEVICE=cuda
+    volumes:
+      - ./data/uploads:/data/uploads
+      - ./data/models:/data/models
+      - ./data/processed:/data/processed
+      - ./data/output:/data/output
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # --- GPU: uncomment this whole block to give the worker GPU access ---
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  redis:
+    image: redis:7-alpine
+    container_name: offkey-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped

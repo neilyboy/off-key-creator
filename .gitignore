@@ -1,0 +1,11 @@
+# Runtime data (uploads, cached model weights, stems, rendered videos)
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editors
+.vscode/
+.idea/

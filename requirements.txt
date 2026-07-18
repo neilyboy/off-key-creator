@@ -1,0 +1,19 @@
+# Web / API
+fastapi>=0.111,<1.0
+uvicorn[standard]>=0.30
+jinja2>=3.1
+python-multipart>=0.0.9
+
+# Task queue
+celery[redis]>=5.4
+redis>=5.0
+
+# Audio separation (Roformer models via UVR model zoo)
+audio-separator[cpu]>=0.28.0
+
+# Transcription + forced alignment
+whisperx>=3.1.5
+
+# Media
+ffmpeg-python>=0.2.0
+mutagen>=1.47
