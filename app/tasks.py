@@ -6,6 +6,7 @@ tasks are wrapped so that any exception is pushed to the UI as a terminal
 "error" event instead of leaving the user hanging.
 """
 import json
+import os
 import shutil
 import subprocess
 import traceback
@@ -62,7 +63,33 @@ def separate_audio(job_id: str, model_key: str) -> dict:
         # Imported lazily so the web container never loads torch.
         from audio_separator.separator import Separator
 
-        separator = Separator(
+        class CustomModelSeparator(Separator):
+            """Extends audio-separator to load Roformer models hosted on
+            Hugging Face that are absent from the built-in model registry.
+
+            Models flagged with `custom_download` in SEPARATION_MODELS have
+            their checkpoint + yaml config fetched directly; everything else
+            falls through to the stock registry lookup.
+            """
+
+            def download_model_files(self, model_filename):
+                custom = next(
+                    (m["custom_download"] for m in SEPARATION_MODELS.values()
+                     if m["filename"] == model_filename and "custom_download" in m),
+                    None,
+                )
+                if custom is None:
+                    return super().download_model_files(model_filename)
+
+                model_path = os.path.join(self.model_file_dir, model_filename)
+                yaml_path = os.path.join(self.model_file_dir, custom["yaml_filename"])
+                self.download_file_if_not_exists(custom["ckpt_url"], model_path)
+                self.download_file_if_not_exists(custom["yaml_url"], yaml_path)
+                # Return shape matches the parent: MDXC is the arch used for
+                # all Roformer checkpoints with a yaml config.
+                return model_filename, "MDXC", model_filename, model_path, custom["yaml_filename"]
+
+        separator = CustomModelSeparator(
             model_file_dir=str(MODELS_DIR / "audio-separator"),
             output_dir=str(work_dir),
             output_format="FLAC",

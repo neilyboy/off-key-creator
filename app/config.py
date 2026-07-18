@@ -18,21 +18,38 @@ ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".m4a"}
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 # ------------------------------------------------------------------
-# Vocal separation models (audio-separator / UVR model zoo filenames).
-# Verify available filenames with:  audio-separator --list_models
+# Vocal separation models.
+#
+# Registry models: filenames from the audio-separator / UVR model zoo
+# (verify with `audio-separator --list_models`).
+#
+# Custom models: not in the registry, downloaded directly from Hugging
+# Face via the `custom_download` entry (see CustomModelSeparator in
+# app/tasks.py). The yaml filename MUST contain "roformer" so
+# audio-separator applies its Roformer loading path.
+#
+# Note: unwa's "BS-Roformer HyperACE" uses a modified architecture
+# (extra SegmModel/HyperACE branch) that audio-separator's stock
+# BS-Roformer implementation cannot load, so the closest supported
+# unwa vocal model (Vocals Revive V3e) is offered instead.
 # ------------------------------------------------------------------
 SEPARATION_MODELS = {
     "mel-roformer-deux": {
         "label": "Mel-Roformer Deux by becruily",
-        "filename": "mel_band_roformer_instrumental_deux_becruily.ckpt",
+        "filename": "mel_band_roformer_deux_becruily.ckpt",
+        "custom_download": {
+            "ckpt_url": "https://huggingface.co/becruily/mel-band-roformer-deux/resolve/main/becruily_deux.ckpt",
+            "yaml_url": "https://huggingface.co/becruily/mel-band-roformer-deux/resolve/main/config_deux_becruily.yaml",
+            "yaml_filename": "config_mel_band_roformer_deux_becruily.yaml",
+        },
     },
-    "bs-roformer-hyperace": {
-        "label": "BS-Roformer HyperACE by unwa",
-        "filename": "bs_roformer_vocals_hyperace_unwa.ckpt",
+    "bs-roformer-revive": {
+        "label": "BS-Roformer Vocals Revive V3e by unwa",
+        "filename": "bs_roformer_vocals_revive_v3e_unwa.ckpt",
     },
     "bs-roformer-resurrection": {
         "label": "BS-Roformer Resurrection by unwa",
-        "filename": "bs_roformer_resurrection_unwa.ckpt",
+        "filename": "bs_roformer_instrumental_resurrection_unwa.ckpt",
     },
 }
 
