@@ -1,6 +1,9 @@
 """FastAPI application: UI, uploads, job orchestration, WebSocket progress."""
 import asyncio
 import json
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import redis.asyncio as aioredis
@@ -252,6 +255,19 @@ async def upload_background(job_id: str, file: UploadFile = File(...)):
     return {"ok": True}
 
 
+@app.post("/api/jobs/{job_id}/logo")
+async def upload_logo(job_id: str, file: UploadFile = File(...)):
+    """Upload a logo/watermark image (PNG with alpha recommended)."""
+    _get_job_or_404(job_id)
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported image format '{ext}'")
+    dest = job_dir(job_id) / f"logo{ext}"
+    await _save_upload(file, dest)
+    update_job(job_id, logo_image_path=str(dest))
+    return {"ok": True}
+
+
 @app.post("/api/jobs/{job_id}/render")
 async def start_render(job_id: str, body: RenderBody):
     job = _get_job_or_404(job_id)
@@ -271,6 +287,59 @@ async def download_video(job_id: str):
     if not path or not Path(path).exists():
         raise HTTPException(status_code=404, detail="Video not rendered yet")
     return FileResponse(path, media_type="video/mp4", filename=Path(path).name)
+
+
+# ----------------------------------------------------------------------
+# Reference lyrics (LRCLIB) - free, keyless lyric database lookup used as
+# a side-by-side cross-reference while reviewing the AI transcription.
+# ----------------------------------------------------------------------
+def _lrclib_fetch(url: str):
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "OffKeyCreator/1.0 (https://github.com/neilyboy/off-key-creator)"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+
+
+@app.get("/api/jobs/{job_id}/reference-lyrics")
+async def reference_lyrics(job_id: str):
+    job = _get_job_or_404(job_id)
+    artist, title = job.get("artist", "").strip(), job.get("title", "").strip()
+    if not artist or not title:
+        raise HTTPException(status_code=400, detail="Artist and Title metadata are required")
+
+    def lookup():
+        # Exact match first, then fall back to fuzzy search.
+        exact_url = "https://lrclib.net/api/get?" + urllib.parse.urlencode(
+            {"artist_name": artist, "track_name": title}
+        )
+        data = _lrclib_fetch(exact_url)
+        if data and data.get("plainLyrics"):
+            return data
+        search_url = "https://lrclib.net/api/search?" + urllib.parse.urlencode(
+            {"q": f"{artist} {title}"}
+        )
+        results = _lrclib_fetch(search_url) or []
+        return next((r for r in results if r.get("plainLyrics")), None)
+
+    try:
+        data = await asyncio.to_thread(lookup)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Lyric lookup failed: {exc}")
+    if not data:
+        raise HTTPException(status_code=404, detail="No lyrics found on LRCLIB for this song")
+    return {
+        "source": "lrclib.net",
+        "matched_artist": data.get("artistName"),
+        "matched_title": data.get("trackName"),
+        "lyrics": data["plainLyrics"],
+    }
 
 
 # ----------------------------------------------------------------------

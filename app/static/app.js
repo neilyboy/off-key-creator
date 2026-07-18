@@ -49,6 +49,35 @@ function setProgress(prefix, pct, msg) {
   if (msg) $(`${prefix}-progress-msg`).textContent = msg;
 }
 
+/* Activity indicators: animated stripes + elapsed ticker so slow stages
+   (CPU separation/transcription can pause minutes between % updates)
+   never look locked up. */
+const stageTimers = {};
+
+function fmtElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  return m > 0 ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+}
+
+function startStageActivity(prefix) {
+  if (stageTimers[prefix]) return;
+  const start = Date.now();
+  $(`${prefix}-progress-elapsed`).textContent = "elapsed 0s";
+  stageTimers[prefix] = setInterval(() => {
+    $(`${prefix}-progress-elapsed`).textContent = `elapsed ${fmtElapsed(Date.now() - start)}`;
+  }, 1000);
+  $(`${prefix}-progress-bar`).classList.add("progress-active");
+}
+
+function stopStageActivity(prefix) {
+  if (stageTimers[prefix]) {
+    clearInterval(stageTimers[prefix]);
+    delete stageTimers[prefix];
+  }
+  $(`${prefix}-progress-bar`).classList.remove("progress-active");
+}
+
 /* ------------------------------------------------------------------ */
 /* WebSocket progress relay                                            */
 /* ------------------------------------------------------------------ */
@@ -74,6 +103,7 @@ function handleProgressEvent(evt) {
   if (!prefix) return;
 
   if (evt.status === "error") {
+    stopStageActivity(prefix);
     setProgress(prefix, 100, "Failed");
     $(`${prefix}-progress-bar`).classList.remove("bg-indigo-500", "bg-emerald-500");
     $(`${prefix}-progress-bar`).classList.add("bg-red-500");
@@ -82,6 +112,12 @@ function handleProgressEvent(evt) {
   }
 
   setProgress(prefix, evt.progress, evt.message);
+
+  if (evt.status === "done") {
+    stopStageActivity(prefix);
+  } else {
+    startStageActivity(prefix);
+  }
 
   if (evt.status === "done") {
     if (evt.stage === "separation") onSeparationDone();
@@ -213,6 +249,26 @@ async function onTranscriptionDone() {
   }
 }
 
+$("btn-fetch-reference").addEventListener("click", async () => {
+  clearError();
+  const btn = $("btn-fetch-reference");
+  btn.disabled = true;
+  btn.textContent = "Fetching...";
+  try {
+    const data = await api(`/api/jobs/${state.jobId}/reference-lyrics`);
+    $("reference-source").textContent =
+      `Reference from ${data.source}: ${data.matched_artist} — ${data.matched_title}`;
+    $("reference-lyrics").textContent = data.lyrics;
+    $("reference-panel").classList.remove("hidden");
+    $("lyrics-grid").classList.add("sm:grid-cols-2");
+  } catch (err) {
+    showError(`Reference lyrics: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Fetch Reference Lyrics";
+  }
+});
+
 $("btn-save-lyrics").addEventListener("click", async () => {
   clearError();
   const lines = $("lyrics-text").value.split("\n");
@@ -260,6 +316,45 @@ $("vis-opacity").addEventListener("input", () => {
   $("vis-opacity-label").textContent = `${$("vis-opacity").value}%`;
 });
 
+$("logo-enabled").addEventListener("change", () => {
+  $("logo-options").classList.toggle("hidden", !$("logo-enabled").checked);
+});
+
+$("logo-size").addEventListener("input", () => {
+  $("logo-size-label").textContent = `${$("logo-size").value}%`;
+});
+
+$("logo-opacity").addEventListener("input", () => {
+  $("logo-opacity-label").textContent = `${$("logo-opacity").value}%`;
+});
+
+$("logo-image-input").addEventListener("change", async (e) => {
+  if (!e.target.files.length) return;
+  clearError();
+  try {
+    const form = new FormData();
+    form.append("file", e.target.files[0]);
+    await api(`/api/jobs/${state.jobId}/logo`, { method: "POST", body: form });
+    const status = $("logo-image-status");
+    status.textContent = `Logo uploaded: ${e.target.files[0].name}`;
+    status.classList.remove("hidden");
+  } catch (err) {
+    showError(`Logo upload failed: ${err.message}`);
+  }
+});
+
+$("pb-enabled").addEventListener("change", () => {
+  $("pb-options").classList.toggle("hidden", !$("pb-enabled").checked);
+});
+
+$("pb-height").addEventListener("input", () => {
+  $("pb-height-label").textContent = `${($("pb-height").value / 10).toFixed(1)}%`;
+});
+
+$("pb-opacity").addEventListener("input", () => {
+  $("pb-opacity-label").textContent = `${$("pb-opacity").value}%`;
+});
+
 function collectSettings() {
   return {
     resolution: $("resolution").value,
@@ -276,6 +371,23 @@ function collectSettings() {
     subtitles: {
       text_color: $("sub-text-color").value,
       highlight_color: $("sub-highlight-color").value,
+      position: $("sub-position").value,
+    },
+    title_card: {
+      enabled: $("title-card-enabled").checked,
+    },
+    logo: {
+      enabled: $("logo-enabled").checked,
+      position: $("logo-position").value,
+      size: Number($("logo-size").value) / 100,
+      opacity: Number($("logo-opacity").value) / 100,
+    },
+    progress_bar: {
+      enabled: $("pb-enabled").checked,
+      position: $("pb-position").value,
+      color: $("pb-color").value,
+      height: Number($("pb-height").value) / 10,
+      opacity: Number($("pb-opacity").value) / 100,
     },
   };
 }
@@ -298,6 +410,29 @@ function applySettings(s) {
   if (s.subtitles) {
     $("sub-text-color").value = s.subtitles.text_color || "#ffffff";
     $("sub-highlight-color").value = s.subtitles.highlight_color || "#ffa500";
+    $("sub-position").value = s.subtitles.position || "bottom";
+  }
+  if (s.title_card) {
+    $("title-card-enabled").checked = !!s.title_card.enabled;
+  }
+  if (s.logo) {
+    $("logo-enabled").checked = !!s.logo.enabled;
+    $("logo-position").value = s.logo.position || "top-right";
+    $("logo-size").value = Math.round((s.logo.size ?? 0.12) * 100);
+    $("logo-opacity").value = Math.round((s.logo.opacity ?? 1) * 100);
+    $("logo-enabled").dispatchEvent(new Event("change"));
+    $("logo-size").dispatchEvent(new Event("input"));
+    $("logo-opacity").dispatchEvent(new Event("input"));
+  }
+  if (s.progress_bar) {
+    $("pb-enabled").checked = !!s.progress_bar.enabled;
+    $("pb-position").value = s.progress_bar.position || "bottom";
+    $("pb-color").value = s.progress_bar.color || "#22c55e";
+    $("pb-height").value = Math.round((s.progress_bar.height ?? 1.5) * 10);
+    $("pb-opacity").value = Math.round((s.progress_bar.opacity ?? 0.8) * 100);
+    $("pb-enabled").dispatchEvent(new Event("change"));
+    $("pb-height").dispatchEvent(new Event("input"));
+    $("pb-opacity").dispatchEvent(new Event("input"));
   }
 }
 

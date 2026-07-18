@@ -9,6 +9,18 @@
   <style>
     .step-inactive { opacity: 0.4; pointer-events: none; }
     input[type="color"] { -webkit-appearance: none; appearance: none; border: none; padding: 0; }
+    /* Animated stripes shown on progress bars while a stage is working,
+       so long gaps between % updates still look alive. */
+    .progress-active {
+      background-image: linear-gradient(45deg, rgba(255,255,255,.25) 25%, transparent 25%,
+        transparent 50%, rgba(255,255,255,.25) 50%, rgba(255,255,255,.25) 75%, transparent 75%, transparent);
+      background-size: 1rem 1rem;
+      animation: progress-stripes 0.8s linear infinite;
+    }
+    @keyframes progress-stripes {
+      from { background-position: 1rem 0; }
+      to { background-position: 0 0; }
+    }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen">
@@ -60,7 +72,8 @@
       </div>
       <div id="separate-progress-wrap" class="hidden mt-4">
         <div class="flex justify-between text-xs text-slate-400 mb-1">
-          <span id="separate-progress-msg">Queued...</span><span id="separate-progress-pct">0%</span>
+          <span id="separate-progress-msg">Queued...</span>
+          <span><span id="separate-progress-elapsed" class="text-slate-500 mr-2"></span><span id="separate-progress-pct">0%</span></span>
         </div>
         <div class="h-2 bg-slate-800 rounded-full overflow-hidden">
           <div id="separate-progress-bar" class="h-full bg-indigo-500 rounded-full transition-all duration-300" style="width:0%"></div>
@@ -84,26 +97,36 @@
       <div class="flex flex-col sm:flex-row gap-3">
         <select id="whisper-model" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
           {% for m in whisper_models %}
-          <option value="{{ m }}" {% if m == "small" %}selected{% endif %}>{{ m }}</option>
+          <option value="{{ m }}" {% if m == "large-v3" %}selected{% endif %}>{{ m }}{% if m == "large-v3" %} (most accurate){% endif %}</option>
           {% endfor %}
         </select>
         <button id="btn-transcribe" class="bg-indigo-600 hover:bg-indigo-500 rounded-lg px-6 py-2 font-medium transition">Transcribe</button>
       </div>
       <div id="transcribe-progress-wrap" class="hidden mt-4">
         <div class="flex justify-between text-xs text-slate-400 mb-1">
-          <span id="transcribe-progress-msg">Queued...</span><span id="transcribe-progress-pct">0%</span>
+          <span id="transcribe-progress-msg">Queued...</span>
+          <span><span id="transcribe-progress-elapsed" class="text-slate-500 mr-2"></span><span id="transcribe-progress-pct">0%</span></span>
         </div>
         <div class="h-2 bg-slate-800 rounded-full overflow-hidden">
           <div id="transcribe-progress-bar" class="h-full bg-indigo-500 rounded-full transition-all duration-300" style="width:0%"></div>
         </div>
       </div>
       <div id="lyrics-review" class="hidden mt-5">
-        <p class="text-sm text-slate-400 mb-2">
-          Review checkpoint — fix misheard words or spelling below.
-          <strong class="text-slate-300">Keep the same number of lines</strong> so word timings stay in sync.
-        </p>
-        <textarea id="lyrics-text" rows="12" spellcheck="true"
-          class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 font-mono text-sm leading-6 focus:outline-none focus:border-indigo-500"></textarea>
+        <div class="flex items-center justify-between mb-2">
+          <p class="text-sm text-slate-400">
+            Review checkpoint — fix misheard words or spelling below.
+            <strong class="text-slate-300">Keep the same number of lines</strong> so word timings stay in sync.
+          </p>
+          <button id="btn-fetch-reference" class="shrink-0 ml-3 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg px-3 py-1.5 transition">Fetch Reference Lyrics</button>
+        </div>
+        <div id="lyrics-grid" class="grid grid-cols-1 gap-4">
+          <textarea id="lyrics-text" rows="14" spellcheck="true"
+            class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 font-mono text-sm leading-6 focus:outline-none focus:border-indigo-500"></textarea>
+          <div id="reference-panel" class="hidden">
+            <p id="reference-source" class="text-xs text-emerald-400 mb-1"></p>
+            <pre id="reference-lyrics" class="h-[22.5rem] overflow-y-auto bg-slate-800/60 border border-slate-700 rounded-lg px-3 py-2 text-sm leading-6 whitespace-pre-wrap text-slate-300"></pre>
+          </div>
+        </div>
         <button id="btn-save-lyrics" class="mt-3 bg-indigo-600 hover:bg-indigo-500 rounded-lg px-6 py-2 font-medium transition">Save Lyrics &amp; Continue</button>
       </div>
     </section>
@@ -166,7 +189,7 @@
           </div>
         </div>
 
-        <div class="sm:col-span-2 border-t border-slate-800 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div class="sm:col-span-2 border-t border-slate-800 pt-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label class="block text-sm text-slate-400 mb-1">Lyric text color (before sung)</label>
             <input id="sub-text-color" type="color" value="#ffffff" class="w-full h-10 rounded-lg bg-slate-800 border border-slate-700 cursor-pointer">
@@ -174,6 +197,80 @@
           <div>
             <label class="block text-sm text-slate-400 mb-1">Highlight color (when sung)</label>
             <input id="sub-highlight-color" type="color" value="#ffa500" class="w-full h-10 rounded-lg bg-slate-800 border border-slate-700 cursor-pointer">
+          </div>
+          <div>
+            <label class="block text-sm text-slate-400 mb-1">Lyric position</label>
+            <select id="sub-position" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+              <option value="bottom" selected>Bottom center</option>
+              <option value="middle">Middle center</option>
+              <option value="top">Top center</option>
+            </select>
+          </div>
+          <label class="sm:col-span-3 inline-flex items-center gap-2 cursor-pointer">
+            <input id="title-card-enabled" type="checkbox" checked class="w-4 h-4 accent-indigo-500">
+            <span class="text-sm">Show intro title card (Artist / Title) before the first line</span>
+          </label>
+        </div>
+
+        <div class="sm:col-span-2 border-t border-slate-800 pt-4">
+          <label class="inline-flex items-center gap-2 cursor-pointer">
+            <input id="logo-enabled" type="checkbox" class="w-4 h-4 accent-indigo-500">
+            <span class="text-sm">Brand the video with a logo / watermark</span>
+          </label>
+          <div id="logo-options" class="hidden mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="sm:col-span-2">
+              <label class="block text-sm text-slate-400 mb-1">Logo image (PNG with transparency recommended)</label>
+              <input type="file" id="logo-image-input" accept=".png,.jpg,.jpeg,.webp,.bmp"
+                class="w-full text-sm text-slate-400 file:bg-slate-800 file:border-0 file:text-slate-200 file:rounded-lg file:px-3 file:py-1.5 file:mr-3">
+              <p id="logo-image-status" class="hidden text-xs text-emerald-400 mt-1"></p>
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Position</label>
+              <select id="logo-position" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+                <option value="top-left">Top left</option>
+                <option value="top-center">Top center</option>
+                <option value="top-right" selected>Top right</option>
+                <option value="bottom-left">Bottom left</option>
+                <option value="bottom-center">Bottom center</option>
+                <option value="bottom-right">Bottom right</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Size: <span id="logo-size-label">12%</span> of width</label>
+              <input id="logo-size" type="range" min="3" max="50" value="12" class="w-full accent-indigo-500">
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Opacity: <span id="logo-opacity-label">100%</span></label>
+              <input id="logo-opacity" type="range" min="0" max="100" value="100" class="w-full accent-indigo-500">
+            </div>
+          </div>
+        </div>
+
+        <div class="sm:col-span-2 border-t border-slate-800 pt-4">
+          <label class="inline-flex items-center gap-2 cursor-pointer">
+            <input id="pb-enabled" type="checkbox" class="w-4 h-4 accent-indigo-500">
+            <span class="text-sm">Show a song progress bar on the video</span>
+          </label>
+          <div id="pb-options" class="hidden mt-3 grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Position</label>
+              <select id="pb-position" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+                <option value="bottom" selected>Bottom edge</option>
+                <option value="top">Top edge</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Color</label>
+              <input id="pb-color" type="color" value="#22c55e" class="w-full h-10 rounded-lg bg-slate-800 border border-slate-700 cursor-pointer">
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Thickness: <span id="pb-height-label">1.5%</span></label>
+              <input id="pb-height" type="range" min="5" max="80" value="15" class="w-full accent-indigo-500">
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Opacity: <span id="pb-opacity-label">80%</span></label>
+              <input id="pb-opacity" type="range" min="0" max="100" value="80" class="w-full accent-indigo-500">
+            </div>
           </div>
         </div>
       </div>
@@ -186,7 +283,8 @@
       <h2 class="font-semibold text-lg mb-4"><span class="text-indigo-400 mr-2">5</span>Render &amp; Download</h2>
       <div id="render-progress-wrap" class="hidden">
         <div class="flex justify-between text-xs text-slate-400 mb-1">
-          <span id="render-progress-msg">Queued...</span><span id="render-progress-pct">0%</span>
+          <span id="render-progress-msg">Queued...</span>
+          <span><span id="render-progress-elapsed" class="text-slate-500 mr-2"></span><span id="render-progress-pct">0%</span></span>
         </div>
         <div class="h-2 bg-slate-800 rounded-full overflow-hidden">
           <div id="render-progress-bar" class="h-full bg-emerald-500 rounded-full transition-all duration-300" style="width:0%"></div>

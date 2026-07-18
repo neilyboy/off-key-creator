@@ -5,10 +5,15 @@ the FastAPI WebSocket relay can stream live updates to the browser. All
 tasks are wrapped so that any exception is pushed to the UI as a terminal
 "error" event instead of leaving the user hanging.
 """
+import contextlib
+import io
 import json
 import os
+import re
 import shutil
 import subprocess
+import sys
+import threading
 import traceback
 from pathlib import Path
 
@@ -24,11 +29,69 @@ from .config import (
     VISUALIZER_TYPES,
     WHISPER_MODELS,
 )
-from .ass_builder import build_ass
+from .ass_builder import build_ass, make_title_text
 from .jobs import job_dir, load_job, publish_progress, update_job
 from .utils import sanitize_filename_part, validate_hex_color
 
 FPS = 30
+
+# Percentage patterns emitted by tqdm (" 42%|####      | ...") and by
+# whisperX's print_progress ("Progress: 42.00%...").
+_PCT_PATTERNS = [
+    re.compile(r"(\d{1,3}(?:\.\d+)?)%\|"),
+    re.compile(r"Progress:\s*(\d{1,3}(?:\.\d+)?)%"),
+]
+
+
+class _ProgressCapture(io.TextIOBase):
+    """Tee-style stream wrapper that extracts percentages from tqdm /
+    whisperX progress output and forwards them to a callback, while still
+    passing everything through to the original stream for docker logs.
+
+    Used with contextlib.redirect_stderr/redirect_stdout around library
+    calls that render their own progress bars - this is what turns the
+    worker's internal chunk-by-chunk progress into live UI updates.
+    """
+
+    def __init__(self, on_percent, passthrough=None):
+        self._on_percent = on_percent
+        self._passthrough = passthrough
+
+    def write(self, s):
+        if self._passthrough is not None:
+            try:
+                self._passthrough.write(s)
+            except Exception:
+                pass
+        for pattern in _PCT_PATTERNS:
+            matches = pattern.findall(s)
+            if matches:
+                try:
+                    self._on_percent(min(float(matches[-1]), 100.0))
+                except Exception:
+                    pass  # progress reporting must never break the task
+        return len(s)
+
+    def flush(self):
+        if self._passthrough is not None:
+            try:
+                self._passthrough.flush()
+            except Exception:
+                pass
+
+
+def _stage_mapper(job_id: str, stage: str, lo: float, hi: float, message: str):
+    """Return a callback mapping a library's 0-100% onto [lo, hi] overall
+    stage progress, throttled to >=1 point steps to limit pub/sub chatter."""
+    last = {"value": -1.0}
+
+    def on_percent(pct: float):
+        mapped = lo + (hi - lo) * pct / 100.0
+        if mapped - last["value"] >= 1.0:
+            last["value"] = mapped
+            publish_progress(job_id, stage, mapped, message=message)
+
+    return on_percent
 
 
 def _fail(job_id: str, stage: str, exc: Exception) -> None:
@@ -94,10 +157,22 @@ def separate_audio(job_id: str, model_key: str) -> dict:
             output_dir=str(work_dir),
             output_format="FLAC",
         )
-        separator.load_model(model_filename=model_filename)
+        # Model download renders a tqdm bar on stderr -> relay as 5-28%.
+        load_capture = _ProgressCapture(
+            _stage_mapper(job_id, stage, 5, 28, "Downloading / loading model..."),
+            passthrough=sys.stderr,
+        )
+        with contextlib.redirect_stderr(load_capture):
+            separator.load_model(model_filename=model_filename)
 
         publish_progress(job_id, stage, 30, message="Separating vocals and instrumental...")
-        output_files = separator.separate(str(input_path))
+        # Chunk inference renders a tqdm bar on stderr -> relay as 30-90%.
+        sep_capture = _ProgressCapture(
+            _stage_mapper(job_id, stage, 30, 90, "Separating vocals and instrumental..."),
+            passthrough=sys.stderr,
+        )
+        with contextlib.redirect_stderr(sep_capture):
+            output_files = separator.separate(str(input_path))
 
         publish_progress(job_id, stage, 90, message="Finalizing stems...")
 
@@ -168,28 +243,46 @@ def transcribe_audio(job_id: str, whisper_model: str) -> dict:
         import whisperx
 
         compute_type = "float16" if DEVICE == "cuda" else "int8"
-        model = whisperx.load_model(
-            whisper_model,
-            DEVICE,
-            compute_type=compute_type,
-            download_root=str(MODELS_DIR / "whisper"),
+        # Weight download renders a tqdm bar on stderr -> relay as 5-20%.
+        dl_capture = _ProgressCapture(
+            _stage_mapper(job_id, stage, 5, 20, f"Downloading / loading Whisper '{whisper_model}'..."),
+            passthrough=sys.stderr,
         )
+        with contextlib.redirect_stderr(dl_capture):
+            model = whisperx.load_model(
+                whisper_model,
+                DEVICE,
+                compute_type=compute_type,
+                download_root=str(MODELS_DIR / "whisper"),
+            )
 
-        publish_progress(job_id, stage, 25, message="Transcribing vocal track...")
+        publish_progress(job_id, stage, 22, message="Transcribing vocal track...")
         audio = whisperx.load_audio(vocals_path)
-        result = model.transcribe(audio, batch_size=8)
+        # print_progress emits "Progress: N%" on stdout -> relay as 22-60%.
+        tr_capture = _ProgressCapture(
+            _stage_mapper(job_id, stage, 22, 60, "Transcribing vocal track..."),
+            passthrough=sys.stdout,
+        )
+        with contextlib.redirect_stdout(tr_capture):
+            result = model.transcribe(audio, batch_size=8, print_progress=True)
         language = result["language"]
 
-        publish_progress(job_id, stage, 60, message="Loading alignment model...")
+        publish_progress(job_id, stage, 62, message="Loading alignment model...")
         align_model, align_metadata = whisperx.load_align_model(
             language_code=language, device=DEVICE
         )
 
-        publish_progress(job_id, stage, 75, message="Force-aligning words (millisecond timing)...")
-        aligned = whisperx.align(
-            result["segments"], align_model, align_metadata, audio, DEVICE,
-            return_char_alignments=False,
+        publish_progress(job_id, stage, 70, message="Force-aligning words (millisecond timing)...")
+        al_capture = _ProgressCapture(
+            _stage_mapper(job_id, stage, 70, 95, "Force-aligning words (millisecond timing)..."),
+            passthrough=sys.stdout,
         )
+        with contextlib.redirect_stdout(al_capture):
+            aligned = whisperx.align(
+                result["segments"], align_model, align_metadata, audio, DEVICE,
+                return_char_alignments=False,
+                print_progress=True,
+            )
 
         segments = []
         for seg in aligned["segments"]:
@@ -239,7 +332,8 @@ def _build_ffmpeg_command(job: dict, settings: dict, work_dir: Path,
     """Construct the FFmpeg arg list (no shell => no injection surface).
 
     Layers, bottom to top:
-      background color/image -> optional visualizer (with opacity) -> ASS subs
+      background color/image -> optional visualizer -> optional animated
+      song progress bar -> optional logo watermark -> ASS karaoke subs
     Audio: the isolated instrumental stem.
     """
     width, height = RESOLUTIONS[settings["resolution"]]
@@ -280,14 +374,61 @@ def _build_ffmpeg_command(job: dict, settings: dict, work_dir: Path,
                 rate=FPS, colors=f"0x{vis_color}",
             )
         else:
+            # NOTE: do not insert an fps filter here - converting showfreqs'
+            # native frame timing before the overlay makes FFmpeg buffer
+            # frames without bound and get OOM-killed. overlay itself syncs
+            # the visualizer to the 30fps main input just fine.
             vis = vis_audio.filter(
                 "showfreqs", s=f"{width}x{vis_h}", mode="bar",
                 fscale="log", colors=f"0x{vis_color}",
-            ).filter("fps", FPS)
+            )
         vis = vis.filter("format", "rgba").filter("colorchannelmixer", aa=opacity)
         video = ffmpeg.overlay(
             video, vis, x="(main_w-overlay_w)/2", y="(main_h-overlay_h)/2",
             eof_action="pass",
+        )
+
+    # --- Animated song progress bar (fills left to right over duration) ---
+    pb_cfg = settings.get("progress_bar", {})
+    if pb_cfg.get("enabled"):
+        pb_color = validate_hex_color(pb_cfg.get("color", "#FFFFFF")).lstrip("#")
+        pb_opacity = min(max(float(pb_cfg.get("opacity", 0.8)), 0.0), 1.0)
+        pb_height_pct = min(max(float(pb_cfg.get("height", 1.5)), 0.4), 8.0)
+        bar_h = max(int(height * pb_height_pct / 100), 3)
+        bar = ffmpeg.input(
+            f"color=c=0x{pb_color}:s={width}x{bar_h}:r={FPS}", f="lavfi"
+        ).filter("format", "rgba").filter("colorchannelmixer", aa=pb_opacity)
+        bar_y = 0 if pb_cfg.get("position", "bottom") == "top" else height - bar_h
+        # Slide the full-width bar in from the left so the visible portion
+        # tracks elapsed time: x goes from -width (0s) to 0 (end of song).
+        video = ffmpeg.overlay(
+            video, bar, x=f"-{width}+{width}*t/{duration:.3f}", y=bar_y,
+        )
+
+    # --- Logo / watermark overlay ---
+    logo_cfg = settings.get("logo", {})
+    logo_path = job.get("logo_image_path")
+    if logo_cfg.get("enabled") and logo_path and Path(logo_path).exists():
+        logo_size = min(max(float(logo_cfg.get("size", 0.12)), 0.03), 0.5)
+        logo_opacity = min(max(float(logo_cfg.get("opacity", 1.0)), 0.0), 1.0)
+        logo = (
+            ffmpeg.input(logo_path)
+            .filter("scale", int(width * logo_size), -1)
+            .filter("format", "rgba")
+            .filter("colorchannelmixer", aa=logo_opacity)
+        )
+        margin = int(width * 0.025)
+        vert, _, horiz = logo_cfg.get("position", "top-right").partition("-")
+        x_map = {
+            "left": str(margin),
+            "center": "(main_w-overlay_w)/2",
+            "right": f"main_w-overlay_w-{margin}",
+        }
+        y_map = {"top": str(margin), "bottom": f"main_h-overlay_h-{margin}"}
+        video = ffmpeg.overlay(
+            video, logo,
+            x=x_map.get(horiz, x_map["right"]),
+            y=y_map.get(vert, y_map["top"]),
         )
 
     # --- Subtitle layer (top) ---
@@ -326,10 +467,17 @@ def render_video(job_id: str, settings: dict) -> dict:
             lyrics = json.load(f)
         width, height = RESOLUTIONS[settings["resolution"]]
         subs = settings.get("subtitles", {})
+        title_text = None
+        if settings.get("title_card", {}).get("enabled"):
+            title_text = make_title_text(
+                job.get("artist", ""), job.get("title", "")
+            )
         ass_text = build_ass(
             lyrics["segments"], width, height,
             text_color=validate_hex_color(subs.get("text_color", "#FFFFFF")),
             highlight_color=validate_hex_color(subs.get("highlight_color", "#00A5FF")),
+            position=subs.get("position", "bottom"),
+            title_text=title_text,
         )
         ass_path = work_dir / "subtitles.ass"
         ass_path.write_text(ass_text, encoding="utf-8")
@@ -344,6 +492,13 @@ def render_video(job_id: str, settings: dict) -> dict:
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1,
         )
+        # Drain stderr on a thread so a chatty FFmpeg can't fill the pipe
+        # and deadlock, and so we always have the tail for error reports.
+        stderr_chunks = []
+        stderr_thread = threading.Thread(
+            target=lambda: stderr_chunks.append(proc.stderr.read()), daemon=True
+        )
+        stderr_thread.start()
         last_pct = 5.0
         for line in proc.stdout:
             line = line.strip()
@@ -360,10 +515,18 @@ def render_video(job_id: str, settings: dict) -> dict:
                         message=f"Rendering... {rendered_s:.0f}s / {duration:.0f}s",
                     )
         proc.stdout.close()
-        stderr_tail = proc.stderr.read()[-2000:]
-        proc.stderr.close()
-        if proc.wait() != 0:
-            raise RuntimeError(f"FFmpeg failed: {stderr_tail.strip() or 'unknown error'}")
+        returncode = proc.wait()
+        stderr_thread.join(timeout=5)
+        stderr_tail = (stderr_chunks[0] if stderr_chunks else "")[-2000:].strip()
+        if returncode != 0:
+            if returncode in (-9, 137):
+                stderr_tail = (
+                    "process was killed (likely out of memory) - try a lower "
+                    "resolution. " + stderr_tail
+                ).strip()
+            raise RuntimeError(
+                f"FFmpeg failed with code {returncode}: {stderr_tail or 'no error output'}"
+            )
 
         # --- Strict `Artist - Title.mp4` naming into ./data/output ---
         artist = sanitize_filename_part(job.get("artist", ""), "Unknown Artist")

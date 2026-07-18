@@ -29,12 +29,18 @@ in `./data/models`, so subsequent runs are fast.
 ## Pipeline
 
 1. **Upload** an MP3/WAV/FLAC/M4A — ID3 Artist/Title are pre-filled and editable.
-2. **Separate** vocals with your choice of Roformer model; preview both stems.
-3. **Transcribe** the vocal stem with a Whisper model of your choice; a
-   review checkpoint lets you fix misheard words without breaking timing.
+2. **Separate** vocals with your choice of Roformer model; live chunk-level
+   progress; preview both stems.
+3. **Transcribe** the vocal stem (Whisper `large-v3` default) with live
+   progress; a review checkpoint lets you fix misheard words without breaking
+   timing, with optional reference lyrics fetched from LRCLIB shown
+   side-by-side for cross-checking.
 4. **Configure** the video: resolution (480p–4K), background color/image,
-   optional audio visualizer with opacity, and karaoke text/highlight colors.
-   Export/import layout presets as JSON for consistent album batches.
+   audio visualizer with opacity, karaoke text/highlight colors, lyric
+   position (top/middle/bottom), intro title card, logo/watermark branding
+   (6 positions, size + opacity), and an animated song progress bar
+   (edge, color, thickness, opacity). Export/import layout presets as JSON
+   for consistent album batches.
 5. **Render** — live FFmpeg progress, then download
    `./data/output/Artist - Title.mp4`.
 
