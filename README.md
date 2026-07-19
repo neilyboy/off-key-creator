@@ -34,11 +34,15 @@ in `./data/models`, so subsequent runs are fast.
 3. **Transcribe** the vocal stem (Whisper `large-v3` default) with live
    progress; a review checkpoint lets you fix misheard words without breaking
    timing, with optional reference lyrics fetched from LRCLIB shown
-   side-by-side for cross-checking.
+   side-by-side and a word-level **diff view** that highlights transcription
+   mistakes at a glance. Prefix lines with `2:` to assign them to a second
+   singer for duet mode.
 4. **Configure** the video: resolution (480p–4K), background color/image,
    audio visualizer with opacity, karaoke text/highlight colors, lyric
-   position (top/middle/bottom), intro title card, logo/watermark branding
-   (6 positions, size + opacity), and an animated song progress bar
+   position (top/middle/bottom), intro title card, countdown dots before
+   lines after instrumental gaps, next-line preview, **duet mode** (second
+   highlight color via `2:` markers or auto-alternating), logo/watermark
+   branding (6 positions, size + opacity), and an animated song progress bar
    (edge, color, thickness, opacity). Export/import layout presets as JSON
    for consistent album batches.
 5. **Render** — live FFmpeg progress, then download

@@ -472,12 +472,22 @@ def render_video(job_id: str, settings: dict) -> dict:
             title_text = make_title_text(
                 job.get("artist", ""), job.get("title", "")
             )
+        duet_cfg = settings.get("duet", {})
+        duet = None
+        if duet_cfg.get("enabled"):
+            duet = {
+                "mode": "alternate" if duet_cfg.get("mode") == "alternate" else "markers",
+                "color_b": validate_hex_color(duet_cfg.get("color_b", "#FF66CC")),
+            }
         ass_text = build_ass(
             lyrics["segments"], width, height,
             text_color=validate_hex_color(subs.get("text_color", "#FFFFFF")),
             highlight_color=validate_hex_color(subs.get("highlight_color", "#00A5FF")),
             position=subs.get("position", "bottom"),
             title_text=title_text,
+            countdown=bool(subs.get("countdown")),
+            preview=bool(subs.get("preview")),
+            duet=duet,
         )
         ass_path = work_dir / "subtitles.ass"
         ass_path.write_text(ass_text, encoding="utf-8")

@@ -256,17 +256,106 @@ $("btn-fetch-reference").addEventListener("click", async () => {
   btn.textContent = "Fetching...";
   try {
     const data = await api(`/api/jobs/${state.jobId}/reference-lyrics`);
+    state.referenceLyrics = data.lyrics;
     $("reference-source").textContent =
       `Reference from ${data.source}: ${data.matched_artist} — ${data.matched_title}`;
     $("reference-lyrics").textContent = data.lyrics;
     $("reference-panel").classList.remove("hidden");
     $("lyrics-grid").classList.add("sm:grid-cols-2");
+    $("btn-show-diff").classList.remove("hidden");
   } catch (err) {
     showError(`Reference lyrics: ${err.message}`);
   } finally {
     btn.disabled = false;
     btn.textContent = "Fetch Reference Lyrics";
   }
+});
+
+/* ---- Transcription vs reference diff (word-level, per line) ---- */
+function diffTokens(line) {
+  return line
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9' ]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+// Longest-common-subsequence match masks for two token arrays.
+function lcsMasks(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const maskA = new Array(a.length).fill(false);
+  const maskB = new Array(b.length).fill(false);
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { maskA[i] = maskB[j] = true; i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+    else j++;
+  }
+  return [maskA, maskB];
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderDiff() {
+  const refLines = state.referenceLyrics
+    .split("\n").map((l) => l.trim()).filter(Boolean)
+    .map((l) => ({ raw: l, tokens: diffTokens(l) }))
+    .filter((l) => l.tokens.length);
+  const rows = [];
+  for (const rawLine of $("lyrics-text").value.split("\n")) {
+    const line = rawLine.replace(/^\s*[12]\s*:\s*/, ""); // ignore duet markers
+    const words = line.split(/\s+/).filter(Boolean);
+    const tokens = diffTokens(line);
+    if (!tokens.length) continue;
+
+    // Best-matching reference line by Dice similarity on the LCS.
+    let best = null, bestScore = 0, bestMasks = null;
+    for (const ref of refLines) {
+      const [ma, mb] = lcsMasks(tokens, ref.tokens);
+      const common = ma.filter(Boolean).length;
+      const score = (2 * common) / (tokens.length + ref.tokens.length);
+      if (score > bestScore) { bestScore = score; best = ref; bestMasks = [ma, mb]; }
+    }
+
+    if (!best || bestScore < 0.3) {
+      rows.push(`<div class="border-b border-slate-700/50 pb-1"><span class="text-slate-200">${escapeHtml(rawLine)}</span> <span class="text-xs text-slate-500">(no close reference line)</span></div>`);
+      continue;
+    }
+
+    const [maskT, maskR] = bestMasks;
+    // Map token mask back onto the display words (tokens align 1:1 with
+    // non-empty words after normalization when counts match; fall back to
+    // per-word normalization otherwise).
+    const wordHtml = words.map((w, k) => {
+      const matched = k < maskT.length ? maskT[k] : true;
+      return matched
+        ? escapeHtml(w)
+        : `<mark class="bg-amber-500/30 text-amber-300 rounded px-0.5">${escapeHtml(w)}</mark>`;
+    }).join(" ");
+
+    const missing = best.tokens.filter((_, k) => !maskR[k]);
+    const missingHtml = missing.length
+      ? ` <span class="text-xs">ref: ${missing.map((m) => `<mark class="bg-emerald-500/30 text-emerald-300 rounded px-0.5">${escapeHtml(m)}</mark>`).join(" ")}</span>`
+      : "";
+    const ok = !missing.length && maskT.every(Boolean);
+    rows.push(`<div class="border-b border-slate-700/50 pb-1">${ok ? '<span class="text-emerald-500 mr-1">\u2713</span>' : ""}<span class="text-slate-200">${wordHtml}</span>${missingHtml}</div>`);
+  }
+  $("diff-rows").innerHTML = rows.join("") || '<p class="text-slate-500">Nothing to compare.</p>';
+  $("diff-panel").classList.remove("hidden");
+}
+
+$("btn-show-diff").addEventListener("click", () => {
+  if (!state.referenceLyrics) return;
+  renderDiff();
 });
 
 $("btn-save-lyrics").addEventListener("click", async () => {
@@ -347,6 +436,10 @@ $("pb-enabled").addEventListener("change", () => {
   $("pb-options").classList.toggle("hidden", !$("pb-enabled").checked);
 });
 
+$("duet-enabled").addEventListener("change", () => {
+  $("duet-options").classList.toggle("hidden", !$("duet-enabled").checked);
+});
+
 $("pb-height").addEventListener("input", () => {
   $("pb-height-label").textContent = `${($("pb-height").value / 10).toFixed(1)}%`;
 });
@@ -372,9 +465,16 @@ function collectSettings() {
       text_color: $("sub-text-color").value,
       highlight_color: $("sub-highlight-color").value,
       position: $("sub-position").value,
+      countdown: $("countdown-enabled").checked,
+      preview: $("preview-enabled").checked,
     },
     title_card: {
       enabled: $("title-card-enabled").checked,
+    },
+    duet: {
+      enabled: $("duet-enabled").checked,
+      mode: $("duet-mode").value,
+      color_b: $("duet-color-b").value,
     },
     logo: {
       enabled: $("logo-enabled").checked,
@@ -411,9 +511,17 @@ function applySettings(s) {
     $("sub-text-color").value = s.subtitles.text_color || "#ffffff";
     $("sub-highlight-color").value = s.subtitles.highlight_color || "#ffa500";
     $("sub-position").value = s.subtitles.position || "bottom";
+    $("countdown-enabled").checked = s.subtitles.countdown ?? true;
+    $("preview-enabled").checked = s.subtitles.preview ?? true;
   }
   if (s.title_card) {
     $("title-card-enabled").checked = !!s.title_card.enabled;
+  }
+  if (s.duet) {
+    $("duet-enabled").checked = !!s.duet.enabled;
+    $("duet-mode").value = s.duet.mode || "markers";
+    $("duet-color-b").value = s.duet.color_b || "#ff66cc";
+    $("duet-enabled").dispatchEvent(new Event("change"));
   }
   if (s.logo) {
     $("logo-enabled").checked = !!s.logo.enabled;

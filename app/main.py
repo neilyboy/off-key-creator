@@ -1,6 +1,7 @@
 """FastAPI application: UI, uploads, job orchestration, WebSocket progress."""
 import asyncio
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -182,7 +183,9 @@ async def get_lyrics(job_id: str):
         lyrics = json.load(f)
     lines = [
         {
-            "text": " ".join(w["word"] for w in seg["words"]),
+            # Re-emit duet singer markers so they survive editing round-trips.
+            "text": (f"{seg['singer']}: " if seg.get("singer") in (1, 2) else "")
+                    + " ".join(w["word"] for w in seg["words"]),
             "start": seg["start"],
             "end": seg["end"],
         }
@@ -198,6 +201,8 @@ async def save_lyrics(job_id: str, body: LyricsBody):
     - Same word count on a line: each word keeps its exact timing.
     - Different word count: the line's time span is redistributed across
       the new words, weighted by word length.
+    - Lines may be prefixed with "1:" or "2:" to assign a duet singer;
+      the marker is stored on the segment, not rendered as lyric text.
     """
     job = _get_job_or_404(job_id)
     path = job.get("lyrics_path")
@@ -214,6 +219,13 @@ async def save_lyrics(job_id: str, body: LyricsBody):
         )
 
     for seg, new_text in zip(segments, body.lines):
+        # Duet singer markers: strip a leading "1:" / "2:" and store it.
+        marker = re.match(r"^\s*([12])\s*:\s*", new_text)
+        if marker:
+            seg["singer"] = int(marker.group(1))
+            new_text = new_text[marker.end():]
+        else:
+            seg.pop("singer", None)
         new_words = [w for w in new_text.split() if w]
         old_words = seg["words"]
         if not new_words:
