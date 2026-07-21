@@ -8,13 +8,15 @@ ENV PYTHONUNBUFFERED=1 \
 # System dependencies:
 #   ffmpeg           - audio/video processing engine
 #   libsndfile1      - soundfile backend for audio-separator
-#   fonts-dejavu     - fonts for libass subtitle rendering
+#   fonts-*          - font families selectable for lyric typography
 #   git              - required by some pip packages installed from VCS metadata
 #   build-essential  - gcc, needed to compile C extensions without wheels (e.g. diffq)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         libsndfile1 \
         fonts-dejavu \
+        fonts-liberation \
+        fonts-noto-core \
         git \
         build-essential \
     && rm -rf /var/lib/apt/lists/*

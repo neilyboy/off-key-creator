@@ -2,6 +2,7 @@
 import asyncio
 import json
 import re
+import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,6 +18,7 @@ from pydantic import BaseModel
 from .config import (
     ALLOWED_AUDIO_EXTENSIONS,
     ALLOWED_IMAGE_EXTENSIONS,
+    FONT_CHOICES,
     REDIS_URL,
     RESOLUTIONS,
     SEPARATION_MODELS,
@@ -91,6 +93,7 @@ async def index(request: Request):
             "separation_models": SEPARATION_MODELS,
             "whisper_models": WHISPER_MODELS,
             "resolutions": list(RESOLUTIONS.keys()),
+            "font_choices": FONT_CHOICES,
         },
     )
 
@@ -265,6 +268,29 @@ async def upload_background(job_id: str, file: UploadFile = File(...)):
     await _save_upload(file, dest)
     update_job(job_id, background_image_path=str(dest))
     return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/backgrounds")
+async def upload_backgrounds(job_id: str, files: list[UploadFile] = File(...)):
+    """Upload a set of images for a slideshow background (replaces the set)."""
+    _get_job_or_404(job_id)
+    for f in files:
+        ext = Path(f.filename or "").suffix.lower()
+        if ext not in ALLOWED_IMAGE_EXTENSIONS:
+            raise HTTPException(status_code=400,
+                                detail=f"Unsupported image format '{ext}' ({f.filename})")
+    slides_dir = job_dir(job_id) / "slideshow"
+    if slides_dir.exists():
+        shutil.rmtree(slides_dir)
+    slides_dir.mkdir(parents=True)
+    paths = []
+    for idx, f in enumerate(files):
+        ext = Path(f.filename or "").suffix.lower()
+        dest = slides_dir / f"slide_{idx:03d}{ext}"
+        await _save_upload(f, dest)
+        paths.append(str(dest))
+    update_job(job_id, background_image_paths=paths)
+    return {"ok": True, "count": len(paths)}
 
 
 @app.post("/api/jobs/{job_id}/logo")

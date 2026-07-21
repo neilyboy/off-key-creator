@@ -8,13 +8,16 @@ tasks are wrapped so that any exception is pushed to the UI as a terminal
 import contextlib
 import io
 import json
+import math
 import os
+import random
 import re
 import shutil
 import subprocess
 import sys
 import threading
 import traceback
+from collections import Counter
 from pathlib import Path
 
 import ffmpeg
@@ -22,6 +25,7 @@ import ffmpeg
 from .celery_app import celery_app
 from .config import (
     DEVICE,
+    FONT_CHOICES,
     MODELS_DIR,
     OUTPUT_DIR,
     RESOLUTIONS,
@@ -327,13 +331,92 @@ def transcribe_audio(job_id: str, whisper_model: str) -> dict:
 # ======================================================================
 # 3. Final video render (FFmpeg layering + live progress)
 # ======================================================================
+# xfade transitions offered for slideshow backgrounds (all built into FFmpeg).
+SLIDESHOW_TRANSITIONS = [
+    "fade", "dissolve", "slideleft", "slideright", "slideup", "slidedown",
+    "wipeleft", "wiperight", "circleopen", "circleclose", "pixelize", "radial",
+]
+SLIDESHOW_TRANSITION_SECONDS = 1.0
+SLIDESHOW_MAX_SLIDES = 240
+
+
+def _slideshow_background(paths: list, background: dict,
+                          width: int, height: int, duration: float):
+    """Chain still images with xfade transitions to cover the song.
+
+    Pure FFmpeg - each image becomes a looped clip of `slide_duration`
+    seconds, consecutive clips are cross-blended with the chosen (or
+    random) xfade transition. Images cycle (optionally shuffled) until
+    the full duration is covered.
+    """
+    slide_dur = min(max(float(background.get("slide_duration", 8.0)), 3.0), 60.0)
+    trans_dur = min(SLIDESHOW_TRANSITION_SECONDS, slide_dur / 3)
+    choice = background.get("transition", "fade")
+    shuffle = bool(background.get("shuffle"))
+
+    n_slides = max(1, math.ceil((duration - trans_dur) / (slide_dur - trans_dur)))
+    n_slides = min(n_slides, SLIDESHOW_MAX_SLIDES)
+
+    order = []
+    while len(order) < n_slides:
+        batch = paths[:]
+        if shuffle:
+            random.shuffle(batch)
+            # avoid showing the same image twice in a row across cycles
+            if order and len(batch) > 1 and batch[0] == order[-1]:
+                batch[0], batch[1] = batch[1], batch[0]
+        order.extend(batch)
+    order = order[:n_slides]
+
+    def slide(path):
+        return (
+            ffmpeg.input(path, loop=1, t=slide_dur, framerate=FPS)
+            .filter("scale", width, height, force_original_aspect_ratio="increase")
+            .filter("crop", width, height)
+            .filter("setsar", 1)
+            .filter("format", "yuv420p")
+        )
+
+    # ffmpeg-python merges identical filter chains into one node, so an
+    # image that cycles around needs an explicit `split` fan-out - one
+    # branch per appearance in the slide order.
+    counts = Counter(order)
+    branches = {}
+    for path, count in counts.items():
+        if count == 1:
+            branches[path] = [slide(path)]
+        else:
+            fanout = slide(path).filter_multi_output("split", count)
+            branches[path] = [fanout.stream(k) for k in range(count)]
+    taken = {path: 0 for path in counts}
+
+    def next_branch(path):
+        stream = branches[path][taken[path]]
+        taken[path] += 1
+        return stream
+
+    video = next_branch(order[0])
+    offset = slide_dur - trans_dur
+    for path in order[1:]:
+        trans = (
+            random.choice(SLIDESHOW_TRANSITIONS) if choice == "random"
+            else (choice if choice in SLIDESHOW_TRANSITIONS else "fade")
+        )
+        video = ffmpeg.filter(
+            [video, next_branch(path)], "xfade",
+            transition=trans, duration=round(trans_dur, 3), offset=round(offset, 3),
+        )
+        offset += slide_dur - trans_dur
+    return video
+
+
 def _build_ffmpeg_command(job: dict, settings: dict, work_dir: Path,
                           ass_path: Path, out_path: Path, duration: float) -> list:
     """Construct the FFmpeg arg list (no shell => no injection surface).
 
     Layers, bottom to top:
-      background color/image -> optional visualizer -> optional animated
-      song progress bar -> optional logo watermark -> ASS karaoke subs
+      background color/image/slideshow -> optional visualizer -> optional
+      animated song progress bar -> optional logo watermark -> ASS subs
     Audio: the isolated instrumental stem.
     """
     width, height = RESOLUTIONS[settings["resolution"]]
@@ -342,7 +425,12 @@ def _build_ffmpeg_command(job: dict, settings: dict, work_dir: Path,
     # --- Background layer ---
     background = settings.get("background", {})
     bg_image = job.get("background_image_path")
-    if background.get("type") == "image" and bg_image and Path(bg_image).exists():
+    slideshow_paths = [
+        p for p in (job.get("background_image_paths") or []) if Path(p).exists()
+    ]
+    if background.get("type") == "slideshow" and slideshow_paths:
+        bg = _slideshow_background(slideshow_paths, background, width, height, duration)
+    elif background.get("type") == "image" and bg_image and Path(bg_image).exists():
         bg = (
             ffmpeg.input(bg_image, loop=1, framerate=FPS)
             .filter("scale", width, height, force_original_aspect_ratio="increase")
@@ -479,6 +567,24 @@ def render_video(job_id: str, settings: dict) -> dict:
                 "mode": "alternate" if duet_cfg.get("mode") == "alternate" else "markers",
                 "color_b": validate_hex_color(duet_cfg.get("color_b", "#FF66CC")),
             }
+
+        # Preview accepts the legacy bool or the full styling object.
+        prev_raw = subs.get("preview")
+        preview = None
+        if isinstance(prev_raw, dict):
+            if prev_raw.get("enabled"):
+                preview = {
+                    "color": validate_hex_color(prev_raw["color"]) if prev_raw.get("color") else None,
+                    "scale": prev_raw.get("scale"),
+                    "placement": prev_raw.get("placement"),
+                }
+        elif prev_raw:
+            preview = {}
+
+        font_name = subs.get("font") or "DejaVu Sans"
+        if font_name not in FONT_CHOICES:
+            font_name = "DejaVu Sans"
+
         ass_text = build_ass(
             lyrics["segments"], width, height,
             text_color=validate_hex_color(subs.get("text_color", "#FFFFFF")),
@@ -486,8 +592,10 @@ def render_video(job_id: str, settings: dict) -> dict:
             position=subs.get("position", "bottom"),
             title_text=title_text,
             countdown=bool(subs.get("countdown")),
-            preview=bool(subs.get("preview")),
+            preview=preview,
             duet=duet,
+            font_name=font_name,
+            font_scale=float(subs.get("font_scale") or 1.0),
         )
         ass_path = work_dir / "subtitles.ass"
         ass_path.write_text(ass_text, encoding="utf-8")

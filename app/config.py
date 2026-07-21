@@ -64,3 +64,15 @@ RESOLUTIONS = {
 }
 
 VISUALIZER_TYPES = ["showwaves", "showfreqs"]
+
+# Lyric fonts available inside the container (see Dockerfile font packages).
+FONT_CHOICES = [
+    "DejaVu Sans",
+    "DejaVu Serif",
+    "DejaVu Sans Mono",
+    "Liberation Sans",
+    "Liberation Serif",
+    "Liberation Mono",
+    "Noto Sans",
+    "Noto Serif",
+]

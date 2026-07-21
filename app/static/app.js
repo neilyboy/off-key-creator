@@ -282,23 +282,59 @@ function diffTokens(line) {
     .filter(Boolean);
 }
 
-// Longest-common-subsequence match masks for two token arrays.
-function lcsMasks(a, b) {
-  const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+// Character-level similarity (1 = identical) used to spot words that were
+// probably misheard rather than missing, e.g. "prayer" vs "player".
+function levSimilarity(a, b) {
+  if (a === b) return 1;
+  const m = a.length, n = b.length;
+  if (!m || !n) return 0;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(
+        prev[j] + 1,
+        cur[j - 1] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    prev = cur;
+  }
+  return 1 - prev[n] / Math.max(m, n);
+}
+
+// Token-level edit alignment (equal / sub / del / ins). Substitutions pair
+// a transcribed word with the reference word in the same slot, letting us
+// suggest the likely correction inline.
+function alignTokens(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
     }
   }
-  const maskA = new Array(a.length).fill(false);
-  const maskB = new Array(b.length).fill(false);
-  let i = 0, j = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) { maskA[i] = maskB[j] = true; i++; j++; }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
-    else j++;
+  const ops = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && dp[i][j] === dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)) {
+      ops.push({ op: a[i - 1] === b[j - 1] ? "eq" : "sub", ai: i - 1, bi: j - 1 });
+      i--; j--;
+    } else if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) {
+      ops.push({ op: "del", ai: i - 1 });
+      i--;
+    } else {
+      ops.push({ op: "ins", bi: j - 1 });
+      j--;
+    }
   }
-  return [maskA, maskB];
+  return ops.reverse();
 }
 
 function escapeHtml(s) {
@@ -317,13 +353,13 @@ function renderDiff() {
     const tokens = diffTokens(line);
     if (!tokens.length) continue;
 
-    // Best-matching reference line by Dice similarity on the LCS.
-    let best = null, bestScore = 0, bestMasks = null;
+    // Best-matching reference line by Dice similarity on aligned tokens.
+    let best = null, bestScore = 0, bestOps = null;
     for (const ref of refLines) {
-      const [ma, mb] = lcsMasks(tokens, ref.tokens);
-      const common = ma.filter(Boolean).length;
-      const score = (2 * common) / (tokens.length + ref.tokens.length);
-      if (score > bestScore) { bestScore = score; best = ref; bestMasks = [ma, mb]; }
+      const ops = alignTokens(tokens, ref.tokens);
+      const eq = ops.filter((o) => o.op === "eq").length;
+      const score = (2 * eq) / (tokens.length + ref.tokens.length);
+      if (score > bestScore) { bestScore = score; best = ref; bestOps = ops; }
     }
 
     if (!best || bestScore < 0.3) {
@@ -331,23 +367,41 @@ function renderDiff() {
       continue;
     }
 
-    const [maskT, maskR] = bestMasks;
-    // Map token mask back onto the display words (tokens align 1:1 with
-    // non-empty words after normalization when counts match; fall back to
-    // per-word normalization otherwise).
-    const wordHtml = words.map((w, k) => {
-      const matched = k < maskT.length ? maskT[k] : true;
-      return matched
-        ? escapeHtml(w)
-        : `<mark class="bg-amber-500/30 text-amber-300 rounded px-0.5">${escapeHtml(w)}</mark>`;
-    }).join(" ");
+    // Tokens usually map 1:1 onto the display words; if normalization
+    // merged/split words, fall back to showing the tokens themselves.
+    const display = words.length === tokens.length ? words : tokens;
+    const parts = [];
+    const missing = [];
+    let ok = true;
+    for (const o of bestOps) {
+      if (o.op === "eq") {
+        parts.push(escapeHtml(display[o.ai]));
+      } else if (o.op === "sub") {
+        ok = false;
+        const t = tokens[o.ai], r = best.tokens[o.bi];
+        if (levSimilarity(t, r) >= 0.4) {
+          // Probable mishearing: show the suggested correction inline.
+          parts.push(
+            `<mark class="bg-amber-500/30 text-amber-300 rounded px-0.5">${escapeHtml(display[o.ai])}</mark>` +
+            `<span class="text-emerald-300 text-xs">\u2192${escapeHtml(r)}</span>`
+          );
+        } else {
+          parts.push(`<mark class="bg-amber-500/30 text-amber-300 rounded px-0.5">${escapeHtml(display[o.ai])}</mark>`);
+          missing.push(r);
+        }
+      } else if (o.op === "del") {
+        ok = false;
+        parts.push(`<mark class="bg-amber-500/30 text-amber-300 rounded px-0.5">${escapeHtml(display[o.ai])}</mark>`);
+      } else {
+        ok = false;
+        missing.push(best.tokens[o.bi]);
+      }
+    }
 
-    const missing = best.tokens.filter((_, k) => !maskR[k]);
     const missingHtml = missing.length
       ? ` <span class="text-xs">ref: ${missing.map((m) => `<mark class="bg-emerald-500/30 text-emerald-300 rounded px-0.5">${escapeHtml(m)}</mark>`).join(" ")}</span>`
       : "";
-    const ok = !missing.length && maskT.every(Boolean);
-    rows.push(`<div class="border-b border-slate-700/50 pb-1">${ok ? '<span class="text-emerald-500 mr-1">\u2713</span>' : ""}<span class="text-slate-200">${wordHtml}</span>${missingHtml}</div>`);
+    rows.push(`<div class="border-b border-slate-700/50 pb-1">${ok ? '<span class="text-emerald-500 mr-1">\u2713</span>' : ""}<span class="text-slate-200">${parts.join(" ")}</span>${missingHtml}</div>`);
   }
   $("diff-rows").innerHTML = rows.join("") || '<p class="text-slate-500">Nothing to compare.</p>';
   $("diff-panel").classList.remove("hidden");
@@ -377,9 +431,10 @@ $("btn-save-lyrics").addEventListener("click", async () => {
 /* Step 4: Layout, presets, render kick-off                            */
 /* ------------------------------------------------------------------ */
 $("bg-type").addEventListener("change", () => {
-  const isImage = $("bg-type").value === "image";
-  $("bg-image-input").classList.toggle("hidden", !isImage);
-  $("bg-color").classList.toggle("hidden", isImage);
+  const type = $("bg-type").value;
+  $("bg-image-input").classList.toggle("hidden", type !== "image");
+  $("bg-color").classList.toggle("hidden", type !== "color");
+  $("slideshow-options").classList.toggle("hidden", type !== "slideshow");
 });
 
 $("bg-image-input").addEventListener("change", async (e) => {
@@ -432,6 +487,39 @@ $("logo-image-input").addEventListener("change", async (e) => {
   }
 });
 
+$("slideshow-input").addEventListener("change", async (e) => {
+  if (!e.target.files.length) return;
+  clearError();
+  const status = $("slideshow-status");
+  status.textContent = `Uploading ${e.target.files.length} image(s)...`;
+  status.classList.remove("hidden");
+  try {
+    const form = new FormData();
+    for (const f of e.target.files) form.append("files", f);
+    const res = await api(`/api/jobs/${state.jobId}/backgrounds`, { method: "POST", body: form });
+    status.textContent = `${res.count} slideshow image(s) uploaded`;
+  } catch (err) {
+    status.classList.add("hidden");
+    showError(`Slideshow upload failed: ${err.message}`);
+  }
+});
+
+$("slide-duration").addEventListener("input", () => {
+  $("slide-duration-label").textContent = `${$("slide-duration").value}s`;
+});
+
+$("sub-font-scale").addEventListener("input", () => {
+  $("sub-font-scale-label").textContent = `${$("sub-font-scale").value}%`;
+});
+
+$("preview-enabled").addEventListener("change", () => {
+  $("preview-options").classList.toggle("hidden", !$("preview-enabled").checked);
+});
+
+$("preview-scale").addEventListener("input", () => {
+  $("preview-scale-label").textContent = `${$("preview-scale").value}%`;
+});
+
 $("pb-enabled").addEventListener("change", () => {
   $("pb-options").classList.toggle("hidden", !$("pb-enabled").checked);
 });
@@ -454,6 +542,9 @@ function collectSettings() {
     background: {
       type: $("bg-type").value,
       color: $("bg-color").value,
+      slide_duration: Number($("slide-duration").value),
+      transition: $("slide-transition").value,
+      shuffle: $("slide-shuffle").checked,
     },
     visualizer: {
       enabled: $("vis-enabled").checked,
@@ -465,8 +556,15 @@ function collectSettings() {
       text_color: $("sub-text-color").value,
       highlight_color: $("sub-highlight-color").value,
       position: $("sub-position").value,
+      font: $("sub-font").value,
+      font_scale: Number($("sub-font-scale").value) / 100,
       countdown: $("countdown-enabled").checked,
-      preview: $("preview-enabled").checked,
+      preview: {
+        enabled: $("preview-enabled").checked,
+        color: $("preview-color").value,
+        scale: Number($("preview-scale").value) / 100,
+        placement: $("preview-placement").value,
+      },
     },
     title_card: {
       enabled: $("title-card-enabled").checked,
@@ -497,7 +595,11 @@ function applySettings(s) {
   if (s.background) {
     $("bg-type").value = s.background.type || "color";
     $("bg-color").value = s.background.color || "#0f172a";
+    $("slide-duration").value = s.background.slide_duration ?? 8;
+    $("slide-transition").value = s.background.transition || "fade";
+    $("slide-shuffle").checked = s.background.shuffle ?? true;
     $("bg-type").dispatchEvent(new Event("change"));
+    $("slide-duration").dispatchEvent(new Event("input"));
   }
   if (s.visualizer) {
     $("vis-enabled").checked = !!s.visualizer.enabled;
@@ -511,8 +613,22 @@ function applySettings(s) {
     $("sub-text-color").value = s.subtitles.text_color || "#ffffff";
     $("sub-highlight-color").value = s.subtitles.highlight_color || "#ffa500";
     $("sub-position").value = s.subtitles.position || "bottom";
+    $("sub-font").value = s.subtitles.font || "DejaVu Sans";
+    $("sub-font-scale").value = Math.round((s.subtitles.font_scale ?? 1) * 100);
     $("countdown-enabled").checked = s.subtitles.countdown ?? true;
-    $("preview-enabled").checked = s.subtitles.preview ?? true;
+    // preview may be the legacy bool or the full styling object
+    const p = s.subtitles.preview;
+    if (typeof p === "object" && p !== null) {
+      $("preview-enabled").checked = !!p.enabled;
+      $("preview-color").value = p.color || "#ffffff";
+      $("preview-scale").value = Math.round((p.scale ?? 0.58) * 100);
+      $("preview-placement").value = p.placement || "above";
+    } else {
+      $("preview-enabled").checked = p ?? true;
+    }
+    $("sub-font-scale").dispatchEvent(new Event("input"));
+    $("preview-scale").dispatchEvent(new Event("input"));
+    $("preview-enabled").dispatchEvent(new Event("change"));
   }
   if (s.title_card) {
     $("title-card-enabled").checked = !!s.title_card.enabled;

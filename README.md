@@ -35,16 +35,20 @@ in `./data/models`, so subsequent runs are fast.
    progress; a review checkpoint lets you fix misheard words without breaking
    timing, with optional reference lyrics fetched from LRCLIB shown
    side-by-side and a word-level **diff view** that highlights transcription
-   mistakes at a glance. Prefix lines with `2:` to assign them to a second
-   singer for duet mode.
-4. **Configure** the video: resolution (480p–4K), background color/image,
-   audio visualizer with opacity, karaoke text/highlight colors, lyric
-   position (top/middle/bottom), intro title card, countdown dots before
-   lines after instrumental gaps, next-line preview, **duet mode** (second
-   highlight color via `2:` markers or auto-alternating), logo/watermark
-   branding (6 positions, size + opacity), and an animated song progress bar
-   (edge, color, thickness, opacity). Export/import layout presets as JSON
-   for consistent album batches.
+   mistakes at a glance — likely mishearings get an inline `word→fix`
+   suggestion from the reference. Prefix lines with `2:` to assign them to a
+   second singer for duet mode.
+4. **Configure** the video: resolution (480p–4K), background color, single
+   image, or a **multi-image slideshow** (pure FFmpeg `xfade` — 12
+   transitions or random, per-image duration, shuffle), audio visualizer
+   with opacity, karaoke text/highlight colors, **font family and size**
+   (DejaVu / Liberation / Noto), lyric position (top/middle/bottom), intro
+   title card, countdown dots before lines after instrumental gaps,
+   fully-styleable **next-line preview** (color, size, five placements),
+   **duet mode** (second highlight color via `2:` markers or
+   auto-alternating), logo/watermark branding (6 positions, size + opacity),
+   and an animated song progress bar (edge, color, thickness, opacity).
+   Export/import layout presets as JSON for consistent album batches.
 5. **Render** — live FFmpeg progress, then download
    `./data/output/Artist - Title.mp4`.
 

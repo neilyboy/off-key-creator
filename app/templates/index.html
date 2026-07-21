@@ -133,8 +133,9 @@
         <div id="diff-panel" class="hidden mt-4">
           <div class="flex items-center gap-4 text-xs text-slate-400 mb-2">
             <span class="font-semibold text-slate-300">Differences vs reference</span>
-            <span><mark class="bg-amber-500/30 text-amber-300 rounded px-1">amber</mark> = transcribed word not in reference line</span>
-            <span><mark class="bg-emerald-500/30 text-emerald-300 rounded px-1">green</mark> = reference word missing from transcription</span>
+            <span><mark class="bg-amber-500/30 text-amber-300 rounded px-1">word</mark><span class="text-emerald-300">&rarr;fix</span> = likely mishearing with suggested correction</span>
+            <span><mark class="bg-amber-500/30 text-amber-300 rounded px-1">amber</mark> = extra/wrong word</span>
+            <span><mark class="bg-emerald-500/30 text-emerald-300 rounded px-1">green</mark> = missing from transcription</span>
           </div>
           <div id="diff-rows" class="max-h-96 overflow-y-auto bg-slate-800/60 border border-slate-700 rounded-lg px-3 py-2 text-sm leading-6 space-y-1"></div>
         </div>
@@ -169,12 +170,48 @@
             <select id="bg-type" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
               <option value="color">Solid color</option>
               <option value="image">Image</option>
+              <option value="slideshow">Slideshow (multiple images)</option>
             </select>
             <input id="bg-color" type="color" value="#0f172a" class="w-10 h-10 rounded-lg bg-slate-800 border border-slate-700 cursor-pointer">
           </div>
           <input type="file" id="bg-image-input" accept=".png,.jpg,.jpeg,.webp,.bmp"
             class="hidden mt-2 w-full text-sm text-slate-400 file:bg-slate-800 file:border-0 file:text-slate-200 file:rounded-lg file:px-3 file:py-1.5 file:mr-3">
           <p id="bg-image-status" class="hidden text-xs text-emerald-400 mt-1"></p>
+        </div>
+
+        <div id="slideshow-options" class="hidden sm:col-span-2 bg-slate-800/40 border border-slate-800 rounded-lg p-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div class="sm:col-span-3">
+            <label class="block text-sm text-slate-400 mb-1">Slideshow images (select several at once, e.g. artist photos)</label>
+            <input type="file" id="slideshow-input" accept=".png,.jpg,.jpeg,.webp,.bmp" multiple
+              class="w-full text-sm text-slate-400 file:bg-slate-800 file:border-0 file:text-slate-200 file:rounded-lg file:px-3 file:py-1.5 file:mr-3">
+            <p id="slideshow-status" class="hidden text-xs text-emerald-400 mt-1"></p>
+          </div>
+          <div>
+            <label class="block text-sm text-slate-400 mb-1">Seconds per image: <span id="slide-duration-label">8s</span></label>
+            <input id="slide-duration" type="range" min="3" max="30" value="8" class="w-full accent-indigo-500">
+          </div>
+          <div>
+            <label class="block text-sm text-slate-400 mb-1">Transition</label>
+            <select id="slide-transition" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+              <option value="fade" selected>Fade</option>
+              <option value="dissolve">Dissolve</option>
+              <option value="slideleft">Slide left</option>
+              <option value="slideright">Slide right</option>
+              <option value="slideup">Slide up</option>
+              <option value="slidedown">Slide down</option>
+              <option value="wipeleft">Wipe left</option>
+              <option value="wiperight">Wipe right</option>
+              <option value="circleopen">Circle open</option>
+              <option value="circleclose">Circle close</option>
+              <option value="pixelize">Pixelize</option>
+              <option value="radial">Radial</option>
+              <option value="random">Random (different each cut)</option>
+            </select>
+          </div>
+          <label class="inline-flex items-center gap-2 cursor-pointer self-end pb-2">
+            <input id="slide-shuffle" type="checkbox" checked class="w-4 h-4 accent-indigo-500">
+            <span class="text-sm">Shuffle image order</span>
+          </label>
         </div>
 
         <div class="sm:col-span-2 border-t border-slate-800 pt-4">
@@ -218,6 +255,18 @@
               <option value="top">Top center</option>
             </select>
           </div>
+          <div>
+            <label class="block text-sm text-slate-400 mb-1">Lyric font</label>
+            <select id="sub-font" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+              {% for f in font_choices %}
+              <option value="{{ f }}">{{ f }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm text-slate-400 mb-1">Lyric size: <span id="sub-font-scale-label">100%</span></label>
+            <input id="sub-font-scale" type="range" min="50" max="200" value="100" class="w-full accent-indigo-500">
+          </div>
           <label class="sm:col-span-3 inline-flex items-center gap-2 cursor-pointer">
             <input id="title-card-enabled" type="checkbox" checked class="w-4 h-4 accent-indigo-500">
             <span class="text-sm">Show intro title card (Artist / Title) before the first line</span>
@@ -230,6 +279,26 @@
             <input id="preview-enabled" type="checkbox" checked class="w-4 h-4 accent-indigo-500">
             <span class="text-sm">Next-line preview (upcoming lyric shown small and dimmed)</span>
           </label>
+          <div id="preview-options" class="sm:col-span-3 bg-slate-800/40 border border-slate-800 rounded-lg p-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Preview color</label>
+              <input id="preview-color" type="color" value="#ffffff" class="w-full h-10 rounded-lg bg-slate-800 border border-slate-700 cursor-pointer">
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Preview size: <span id="preview-scale-label">58%</span> of lyric</label>
+              <input id="preview-scale" type="range" min="30" max="100" value="58" class="w-full accent-indigo-500">
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Preview placement</label>
+              <select id="preview-placement" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+                <option value="above" selected>Just above the lyric line</option>
+                <option value="below">Just below the lyric line</option>
+                <option value="top">Top of screen</option>
+                <option value="middle">Middle of screen</option>
+                <option value="bottom">Bottom of screen</option>
+              </select>
+            </div>
+          </div>
         </div>
 
         <div class="sm:col-span-2 border-t border-slate-800 pt-4">
