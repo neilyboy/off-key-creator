@@ -98,6 +98,24 @@ def _stage_mapper(job_id: str, stage: str, lo: float, hi: float, message: str):
     return on_percent
 
 
+def _free_gpu() -> None:
+    """Release cached CUDA memory so the next task in this worker process
+    (solo pool = one shared process) can allocate VRAM. PyTorch caches
+    freed memory instead of returning it to the driver, which starves
+    ctranslate2 / other allocators."""
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+
 def _fail(job_id: str, stage: str, exc: Exception) -> None:
     """Publish a terminal error event with a human-readable message."""
     msg = f"{type(exc).__name__}: {exc}"
@@ -178,6 +196,9 @@ def separate_audio(job_id: str, model_key: str) -> dict:
         with contextlib.redirect_stderr(sep_capture):
             output_files = separator.separate(str(input_path))
 
+        del separator
+        _free_gpu()
+
         publish_progress(job_id, stage, 90, message="Finalizing stems...")
 
         vocals_path = work_dir / "vocals.flac"
@@ -205,6 +226,7 @@ def separate_audio(job_id: str, model_key: str) -> dict:
         publish_progress(job_id, stage, 100, status="done", message="Separation complete")
         return {"ok": True}
     except Exception as exc:  # noqa: BLE001 - must surface everything to the UI
+        _free_gpu()
         _fail(job_id, stage, exc)
         raise
 
@@ -271,6 +293,9 @@ def transcribe_audio(job_id: str, whisper_model: str) -> dict:
             result = model.transcribe(audio, batch_size=8, print_progress=True)
         language = result["language"]
 
+        del model
+        _free_gpu()
+
         publish_progress(job_id, stage, 62, message="Loading alignment model...")
         align_model, align_metadata = whisperx.load_align_model(
             language_code=language, device=DEVICE
@@ -287,6 +312,9 @@ def transcribe_audio(job_id: str, whisper_model: str) -> dict:
                 return_char_alignments=False,
                 print_progress=True,
             )
+
+        del align_model
+        _free_gpu()
 
         segments = []
         for seg in aligned["segments"]:
@@ -324,6 +352,7 @@ def transcribe_audio(job_id: str, whisper_model: str) -> dict:
                          message=f"Transcribed {len(segments)} lines")
         return {"ok": True}
     except Exception as exc:  # noqa: BLE001
+        _free_gpu()
         _fail(job_id, stage, exc)
         raise
 
