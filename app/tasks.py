@@ -274,43 +274,47 @@ def transcribe_audio(job_id: str, whisper_model: str) -> dict:
             _stage_mapper(job_id, stage, 5, 20, f"Downloading / loading Whisper '{whisper_model}'..."),
             passthrough=sys.stderr,
         )
-        # Fallback chain: if the GPU is out of memory (e.g. VRAM still held
-        # by a previous stage or another process), degrade gracefully
-        # instead of failing the job outright.
-        attempts = [(DEVICE, compute_type)]
+        # Fallback chain: OOM can strike while loading the model OR during
+        # transcription itself (the pyannote VAD step allocates VRAM too, and
+        # on small GPUs a big whisper model leaves it no headroom). Each
+        # attempt covers the full load+transcribe cycle so any OOM degrades
+        # gracefully instead of failing the job outright.
+        attempts = [(DEVICE, compute_type, 8)]
         if DEVICE == "cuda":
-            attempts += [("cuda", "int8_float16"), ("cpu", "int8")]
-        model = None
-        with contextlib.redirect_stderr(dl_capture):
-            for i, (dev, ctype) in enumerate(attempts):
-                try:
+            attempts += [("cuda", "int8_float16", 4), ("cpu", "int8", 8)]
+        audio = whisperx.load_audio(vocals_path)
+        result = None
+        for i, (dev, ctype, batch_size) in enumerate(attempts):
+            model = None
+            try:
+                with contextlib.redirect_stderr(dl_capture):
                     model = whisperx.load_model(
                         whisper_model,
                         dev,
                         compute_type=ctype,
                         download_root=str(MODELS_DIR / "whisper"),
                     )
-                    device_used = dev
-                    break
-                except RuntimeError as exc:
-                    if "out of memory" not in str(exc).lower() or i == len(attempts) - 1:
-                        raise
-                    print(
-                        f"Whisper load OOM on {dev}/{ctype}; retrying with "
-                        f"{attempts[i + 1][0]}/{attempts[i + 1][1]}...",
-                        file=sys.stderr,
-                    )
-                    _free_gpu()
-
-        publish_progress(job_id, stage, 22, message="Transcribing vocal track...")
-        audio = whisperx.load_audio(vocals_path)
-        # print_progress emits "Progress: N%" on stdout -> relay as 22-60%.
-        tr_capture = _ProgressCapture(
-            _stage_mapper(job_id, stage, 22, 60, "Transcribing vocal track..."),
-            passthrough=sys.stdout,
-        )
-        with contextlib.redirect_stdout(tr_capture):
-            result = model.transcribe(audio, batch_size=8, print_progress=True)
+                publish_progress(job_id, stage, 22, message="Transcribing vocal track...")
+                # print_progress emits "Progress: N%" on stdout -> relay as 22-60%.
+                tr_capture = _ProgressCapture(
+                    _stage_mapper(job_id, stage, 22, 60, "Transcribing vocal track..."),
+                    passthrough=sys.stdout,
+                )
+                with contextlib.redirect_stdout(tr_capture):
+                    result = model.transcribe(audio, batch_size=batch_size, print_progress=True)
+                device_used = dev
+                break
+            except (RuntimeError, MemoryError) as exc:
+                oom = "out of memory" in str(exc).lower() or "batch_size" in str(exc)
+                if not oom or i == len(attempts) - 1:
+                    raise
+                print(
+                    f"Whisper OOM on {dev}/{ctype}; retrying with "
+                    f"{attempts[i + 1][0]}/{attempts[i + 1][1]}...",
+                    file=sys.stderr,
+                )
+                del model
+                _free_gpu()
         language = result["language"]
 
         del model
