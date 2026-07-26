@@ -45,7 +45,10 @@ services:
   worker:
     build: .
     container_name: offkey-worker
-    command: celery -A app.celery_app worker --loglevel=info --concurrency=1 --pool=solo
+    # prefork + max-tasks-per-child=1 gives every task a fresh process, so
+    # all GPU memory (CUDA context included) is fully released between the
+    # separation, transcription, and render stages.
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=1 --pool=prefork --max-tasks-per-child=1
     environment:
       - REDIS_URL=redis://redis:6379/0
       - DATA_DIR=/data

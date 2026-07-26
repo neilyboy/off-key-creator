@@ -274,13 +274,33 @@ def transcribe_audio(job_id: str, whisper_model: str) -> dict:
             _stage_mapper(job_id, stage, 5, 20, f"Downloading / loading Whisper '{whisper_model}'..."),
             passthrough=sys.stderr,
         )
+        # Fallback chain: if the GPU is out of memory (e.g. VRAM still held
+        # by a previous stage or another process), degrade gracefully
+        # instead of failing the job outright.
+        attempts = [(DEVICE, compute_type)]
+        if DEVICE == "cuda":
+            attempts += [("cuda", "int8_float16"), ("cpu", "int8")]
+        model = None
         with contextlib.redirect_stderr(dl_capture):
-            model = whisperx.load_model(
-                whisper_model,
-                DEVICE,
-                compute_type=compute_type,
-                download_root=str(MODELS_DIR / "whisper"),
-            )
+            for i, (dev, ctype) in enumerate(attempts):
+                try:
+                    model = whisperx.load_model(
+                        whisper_model,
+                        dev,
+                        compute_type=ctype,
+                        download_root=str(MODELS_DIR / "whisper"),
+                    )
+                    device_used = dev
+                    break
+                except RuntimeError as exc:
+                    if "out of memory" not in str(exc).lower() or i == len(attempts) - 1:
+                        raise
+                    print(
+                        f"Whisper load OOM on {dev}/{ctype}; retrying with "
+                        f"{attempts[i + 1][0]}/{attempts[i + 1][1]}...",
+                        file=sys.stderr,
+                    )
+                    _free_gpu()
 
         publish_progress(job_id, stage, 22, message="Transcribing vocal track...")
         audio = whisperx.load_audio(vocals_path)
@@ -298,7 +318,7 @@ def transcribe_audio(job_id: str, whisper_model: str) -> dict:
 
         publish_progress(job_id, stage, 62, message="Loading alignment model...")
         align_model, align_metadata = whisperx.load_align_model(
-            language_code=language, device=DEVICE
+            language_code=language, device=device_used
         )
 
         publish_progress(job_id, stage, 70, message="Force-aligning words (millisecond timing)...")
@@ -308,7 +328,7 @@ def transcribe_audio(job_id: str, whisper_model: str) -> dict:
         )
         with contextlib.redirect_stdout(al_capture):
             aligned = whisperx.align(
-                result["segments"], align_model, align_metadata, audio, DEVICE,
+                result["segments"], align_model, align_metadata, audio, device_used,
                 return_char_alignments=False,
                 print_progress=True,
             )
