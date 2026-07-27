@@ -26,7 +26,7 @@ from .config import (
     WHISPER_MODELS,
 )
 from .jobs import job_dir, load_job, new_job_id, save_job, update_job
-from .tasks import render_video, separate_audio, transcribe_audio
+from .tasks import realign_lyrics, render_video, separate_audio, transcribe_audio
 from .utils import extract_id3_metadata
 
 BASE_DIR = Path(__file__).parent
@@ -199,11 +199,14 @@ async def get_lyrics(job_id: str):
 
 @app.post("/api/jobs/{job_id}/lyrics")
 async def save_lyrics(job_id: str, body: LyricsBody):
-    """Apply user text edits while preserving word-level timestamps.
+    """Apply user text edits, then re-derive accurate word timings.
 
     - Same word count on a line: each word keeps its exact timing.
     - Different word count: the line's time span is redistributed across
-      the new words, weighted by word length.
+      the new words, weighted by word length, as a provisional estimate.
+    - If any text changed, a background forced-alignment task re-aligns the
+      corrected words against the vocal stem for true millisecond timings
+      (fixes e.g. "Breeze him" -> "Freezin'" where word counts differ).
     - Lines may be prefixed with "1:" or "2:" to assign a duet singer;
       the marker is stored on the segment, not rendered as lyric text.
     """
@@ -221,6 +224,7 @@ async def save_lyrics(job_id: str, body: LyricsBody):
                    f"(got {len(body.lines)}). Edit words, not line breaks.",
         )
 
+    text_changed = False
     for seg, new_text in zip(segments, body.lines):
         # Duet singer markers: strip a leading "1:" / "2:" and store it.
         marker = re.match(r"^\s*([12])\s*:\s*", new_text)
@@ -233,6 +237,8 @@ async def save_lyrics(job_id: str, body: LyricsBody):
         old_words = seg["words"]
         if not new_words:
             continue  # keep the original line rather than emptying it
+        if new_words != [w["word"] for w in old_words]:
+            text_changed = True
         if len(new_words) == len(old_words):
             for old, text in zip(old_words, new_words):
                 old["word"] = text
@@ -252,7 +258,11 @@ async def save_lyrics(job_id: str, body: LyricsBody):
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(lyrics, f, ensure_ascii=False, indent=2)
-    return {"ok": True}
+
+    if text_changed:
+        update_job(job_id, status="realigning")
+        realign_lyrics.delay(job_id)
+    return {"ok": True, "realigning": text_changed}
 
 
 # ----------------------------------------------------------------------

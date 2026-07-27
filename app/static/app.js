@@ -97,6 +97,7 @@ function handleProgressEvent(evt) {
   const prefixMap = {
     separation: "separate",
     transcription: "transcribe",
+    realign: "transcribe",
     render: "render",
   };
   const prefix = prefixMap[evt.stage];
@@ -107,6 +108,7 @@ function handleProgressEvent(evt) {
     setProgress(prefix, 100, "Failed");
     $(`${prefix}-progress-bar`).classList.remove("bg-indigo-500", "bg-emerald-500");
     $(`${prefix}-progress-bar`).classList.add("bg-red-500");
+    if (evt.stage === "realign") $("btn-save-lyrics").disabled = false;
     showError(`${evt.stage} failed: ${evt.message}`);
     return;
   }
@@ -122,6 +124,7 @@ function handleProgressEvent(evt) {
   if (evt.status === "done") {
     if (evt.stage === "separation") onSeparationDone();
     if (evt.stage === "transcription") onTranscriptionDone();
+    if (evt.stage === "realign") onRealignDone();
     if (evt.stage === "render") onRenderDone();
   }
 }
@@ -416,16 +419,37 @@ $("btn-save-lyrics").addEventListener("click", async () => {
   clearError();
   const lines = $("lyrics-text").value.split("\n");
   try {
-    await api(`/api/jobs/${state.jobId}/lyrics`, {
+    const resp = await api(`/api/jobs/${state.jobId}/lyrics`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ lines }),
     });
-    activateStep("step-layout");
+    if (resp.realigning) {
+      // Text changed: a background task re-aligns word timings against the
+      // vocal stem. Wait for its "realign" done event before advancing.
+      $("btn-save-lyrics").disabled = true;
+      const bar = $("transcribe-progress-bar");
+      bar.classList.remove("bg-red-500");
+      bar.classList.add("bg-indigo-500");
+      setProgress("transcribe", 0, "Re-aligning corrected lyrics...");
+    } else {
+      activateStep("step-layout");
+    }
   } catch (err) {
     showError(err.message);
   }
 });
+
+async function onRealignDone() {
+  $("btn-save-lyrics").disabled = false;
+  try {
+    const data = await api(`/api/jobs/${state.jobId}/lyrics`);
+    $("lyrics-text").value = data.lines.map((l) => l.text).join("\n");
+  } catch (err) {
+    /* non-fatal: lyrics text is already correct locally */
+  }
+  activateStep("step-layout");
+}
 
 /* ------------------------------------------------------------------ */
 /* Step 4: Layout, presets, render kick-off                            */

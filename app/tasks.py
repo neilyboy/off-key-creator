@@ -381,6 +381,110 @@ def transcribe_audio(job_id: str, whisper_model: str) -> dict:
         raise
 
 
+@celery_app.task(name="app.tasks.realign_lyrics")
+def realign_lyrics(job_id: str) -> dict:
+    """Re-run whisperX forced alignment using the user-corrected lyric text.
+
+    After the review checkpoint, edited words (e.g. "Breeze him" corrected
+    to "Freezin'") no longer match the timings whisper produced for its own
+    transcription. Instead of guessing timings by redistributing the line's
+    span, force-align the corrected text against the vocal stem to get true
+    millisecond word timings for exactly the words the user typed.
+    """
+    stage = "realign"
+    try:
+        job = load_job(job_id)
+        vocals_path = job.get("vocals_path")
+        lyrics_path = job.get("lyrics_path")
+        if not vocals_path or not Path(vocals_path).exists():
+            raise FileNotFoundError("Vocal stem not found - run separation first")
+        if not lyrics_path or not Path(lyrics_path).exists():
+            raise FileNotFoundError("Lyrics not found - run transcription first")
+        with open(lyrics_path, "r", encoding="utf-8") as f:
+            lyrics = json.load(f)
+        segments = lyrics["segments"]
+
+        publish_progress(job_id, stage, 5, message="Loading alignment model...")
+
+        import whisperx
+
+        audio = whisperx.load_audio(vocals_path)
+        align_input = [
+            {
+                "start": seg["start"],
+                "end": seg["end"],
+                "text": " ".join(w["word"] for w in seg["words"]),
+            }
+            for seg in segments
+        ]
+        language = lyrics.get("language") or "en"
+
+        # OOM fallback: alignment is light, drop to CPU if the GPU is full.
+        devices = [DEVICE, "cpu"] if DEVICE == "cuda" else ["cpu"]
+        aligned = None
+        for dev in devices:
+            try:
+                align_model, align_metadata = whisperx.load_align_model(
+                    language_code=language, device=dev
+                )
+                publish_progress(job_id, stage, 20, message="Force-aligning corrected words...")
+                al_capture = _ProgressCapture(
+                    _stage_mapper(job_id, stage, 20, 90, "Force-aligning corrected words..."),
+                    passthrough=sys.stdout,
+                )
+                with contextlib.redirect_stdout(al_capture):
+                    aligned = whisperx.align(
+                        align_input, align_model, align_metadata, audio, dev,
+                        return_char_alignments=False,
+                        print_progress=True,
+                    )
+                del align_model
+                break
+            except (RuntimeError, MemoryError) as exc:
+                oom = "out of memory" in str(exc).lower() or "batch_size" in str(exc)
+                if not oom or dev == "cpu":
+                    raise
+                print(f"Alignment OOM on {dev}; retrying on cpu...", file=sys.stderr)
+                _free_gpu()
+        _free_gpu()
+
+        # whisperx.align returns one output segment per input segment; a
+        # segment it could not align comes back with empty words, in which
+        # case the previous (estimated) timings are kept.
+        new_segments = []
+        for orig, seg in zip(segments, aligned["segments"]):
+            words = [
+                {"word": w.get("word", "").strip(),
+                 "start": w.get("start"),
+                 "end": w.get("end")}
+                for w in seg.get("words", [])
+                if w.get("word", "").strip()
+            ]
+            if not words:
+                new_segments.append(orig)
+                continue
+            seg_start = float(seg.get("start", orig["start"]))
+            seg_end = float(seg.get("end", orig["end"]))
+            words = _fill_missing_word_times(words, seg_start, seg_end)
+            new_seg = {"start": seg_start, "end": seg_end, "words": words}
+            if orig.get("singer") in (1, 2):
+                new_seg["singer"] = orig["singer"]
+            new_segments.append(new_seg)
+        # Length mismatch would desync lines from timings; keep estimates.
+        if len(new_segments) == len(segments):
+            lyrics["segments"] = new_segments
+            with open(lyrics_path, "w", encoding="utf-8") as f:
+                json.dump(lyrics, f, ensure_ascii=False, indent=2)
+
+        publish_progress(job_id, stage, 100, status="done",
+                         message="Word timings re-aligned to corrected lyrics")
+        return {"ok": True}
+    except Exception as exc:  # noqa: BLE001
+        _free_gpu()
+        _fail(job_id, stage, exc)
+        raise
+
+
 # ======================================================================
 # 3. Final video render (FFmpeg layering + live progress)
 # ======================================================================
