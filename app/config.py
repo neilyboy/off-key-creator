@@ -63,7 +63,7 @@ RESOLUTIONS = {
     "480p": (854, 480),
 }
 
-VISUALIZER_TYPES = ["showwaves", "showfreqs"]
+VISUALIZER_TYPES = ["showwaves", "showfreqs", "showspectrum"]
 
 # Lyric fonts available inside the container (see Dockerfile font packages).
 FONT_CHOICES = [

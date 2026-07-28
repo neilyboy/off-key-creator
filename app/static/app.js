@@ -459,6 +459,11 @@ $("bg-type").addEventListener("change", () => {
   $("bg-image-input").classList.toggle("hidden", type !== "image");
   $("bg-color").classList.toggle("hidden", type !== "color");
   $("slideshow-options").classList.toggle("hidden", type !== "slideshow");
+  $("bg-motion-options").classList.toggle("hidden", type !== "image");
+});
+
+$("bg-motion").addEventListener("change", () => {
+  $("bg-motion-style").disabled = !$("bg-motion").checked;
 });
 
 $("bg-image-input").addEventListener("change", async (e) => {
@@ -566,6 +571,8 @@ function collectSettings() {
     background: {
       type: $("bg-type").value,
       color: $("bg-color").value,
+      motion: $("bg-motion").checked ? "kenburns" : "",
+      motion_style: $("bg-motion-style").value,
       slide_duration: Number($("slide-duration").value),
       transition: $("slide-transition").value,
       shuffle: $("slide-shuffle").checked,
@@ -573,6 +580,7 @@ function collectSettings() {
     visualizer: {
       enabled: $("vis-enabled").checked,
       type: $("vis-type").value,
+      placement: $("vis-placement").value,
       color: $("vis-color").value,
       opacity: Number($("vis-opacity").value) / 100,
     },
@@ -619,15 +627,19 @@ function applySettings(s) {
   if (s.background) {
     $("bg-type").value = s.background.type || "color";
     $("bg-color").value = s.background.color || "#0f172a";
+    $("bg-motion").checked = s.background.motion === "kenburns";
+    $("bg-motion-style").value = s.background.motion_style || "zoom-in";
     $("slide-duration").value = s.background.slide_duration ?? 8;
     $("slide-transition").value = s.background.transition || "fade";
     $("slide-shuffle").checked = s.background.shuffle ?? true;
     $("bg-type").dispatchEvent(new Event("change"));
+    $("bg-motion").dispatchEvent(new Event("change"));
     $("slide-duration").dispatchEvent(new Event("input"));
   }
   if (s.visualizer) {
     $("vis-enabled").checked = !!s.visualizer.enabled;
     $("vis-type").value = s.visualizer.type || "showwaves";
+    $("vis-placement").value = s.visualizer.placement || "center";
     $("vis-color").value = s.visualizer.color || "#818cf8";
     $("vis-opacity").value = Math.round((s.visualizer.opacity ?? 1) * 100);
     $("vis-enabled").dispatchEvent(new Event("change"));

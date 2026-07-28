@@ -567,6 +567,55 @@ def _slideshow_background(paths: list, background: dict,
     return video
 
 
+# Ken Burns pan/zoom styles for image backgrounds (all pure FFmpeg zoompan).
+KENBURNS_STYLES = ["zoom-in", "zoom-out", "pan-left", "pan-right"]
+KENBURNS_MAX_ZOOM = 1.18
+KENBURNS_PAN_ZOOM = 1.15
+
+
+def _kenburns_background(bg_image: str, background: dict,
+                         width: int, height: int, duration: float):
+    """Slow pan/zoom (Ken Burns) over a still image via zoompan.
+
+    The image is looped at the output framerate and oversampled 2x before
+    zoompan (sub-pixel sampling on a larger source avoids visible jitter).
+    With d=1 each looped input frame yields one output frame, so `pzoom`
+    (previous frame's zoom) and `in` (input frame index) drive a smooth
+    drift across the whole song.
+    """
+    style = background.get("motion_style", "zoom-in")
+    if style == "random":
+        style = random.choice(KENBURNS_STYLES)
+    if style not in KENBURNS_STYLES:
+        style = "zoom-in"
+
+    total_frames = max(int(duration * FPS), 1)
+    center_x = "iw/2-(iw/zoom/2)"
+    center_y = "ih/2-(ih/zoom/2)"
+    if style == "zoom-in":
+        inc = (KENBURNS_MAX_ZOOM - 1.0) / total_frames
+        z, x, y = f"min(pzoom+{inc:.8f},{KENBURNS_MAX_ZOOM})", center_x, center_y
+    elif style == "zoom-out":
+        dec = (KENBURNS_MAX_ZOOM - 1.0) / total_frames
+        z = f"if(lte(pzoom,1.001),{KENBURNS_MAX_ZOOM},max(pzoom-{dec:.8f},1.0))"
+        x, y = center_x, center_y
+    elif style == "pan-left":
+        z = f"{KENBURNS_PAN_ZOOM}"
+        x, y = f"(iw-iw/zoom)*in/{total_frames}", center_y
+    else:  # pan-right
+        z = f"{KENBURNS_PAN_ZOOM}"
+        x, y = f"(iw-iw/zoom)*(1-in/{total_frames})", center_y
+
+    return (
+        ffmpeg.input(bg_image, loop=1, framerate=FPS)
+        .filter("scale", width * 2, height * 2, force_original_aspect_ratio="increase")
+        .filter("crop", width * 2, height * 2)
+        .filter("zoompan", z=z, x=x, y=y, d=1, s=f"{width}x{height}", fps=FPS)
+        .filter("setsar", 1)
+        .filter("format", "yuv420p")
+    )
+
+
 def _build_ffmpeg_command(job: dict, settings: dict, work_dir: Path,
                           ass_path: Path, out_path: Path, duration: float) -> list:
     """Construct the FFmpeg arg list (no shell => no injection surface).
@@ -588,12 +637,16 @@ def _build_ffmpeg_command(job: dict, settings: dict, work_dir: Path,
     if background.get("type") == "slideshow" and slideshow_paths:
         bg = _slideshow_background(slideshow_paths, background, width, height, duration)
     elif background.get("type") == "image" and bg_image and Path(bg_image).exists():
-        bg = (
-            ffmpeg.input(bg_image, loop=1, framerate=FPS)
-            .filter("scale", width, height, force_original_aspect_ratio="increase")
-            .filter("crop", width, height)
-            .filter("setsar", 1)
-        )
+        # Opt-in Ken Burns motion; without it the static path is unchanged.
+        if background.get("motion") == "kenburns":
+            bg = _kenburns_background(bg_image, background, width, height, duration)
+        else:
+            bg = (
+                ffmpeg.input(bg_image, loop=1, framerate=FPS)
+                .filter("scale", width, height, force_original_aspect_ratio="increase")
+                .filter("crop", width, height)
+                .filter("setsar", 1)
+            )
     else:
         color = validate_hex_color(background.get("color", "#000000"), "#000000")
         bg = ffmpeg.input(
@@ -618,6 +671,13 @@ def _build_ffmpeg_command(job: dict, settings: dict, work_dir: Path,
                 "showwaves", s=f"{width}x{vis_h}", mode="cline",
                 rate=FPS, colors=f"0x{vis_color}",
             )
+        elif vis_type == "showspectrum":
+            # Scrolling frequency spectrum. Palette-based filter: the user's
+            # hex color does not apply here.
+            vis = vis_audio.filter(
+                "showspectrum", s=f"{width}x{vis_h}", mode="combined",
+                color="intensity", scale="log", slide="scroll",
+            )
         else:
             # NOTE: do not insert an fps filter here - converting showfreqs'
             # native frame timing before the overlay makes FFmpeg buffer
@@ -628,8 +688,12 @@ def _build_ffmpeg_command(job: dict, settings: dict, work_dir: Path,
                 fscale="log", colors=f"0x{vis_color}",
             )
         vis = vis.filter("format", "rgba").filter("colorchannelmixer", aa=opacity)
+        if vis_cfg.get("placement") == "lower-third":
+            vis_y = f"main_h-overlay_h-{int(height * 0.05)}"
+        else:
+            vis_y = "(main_h-overlay_h)/2"
         video = ffmpeg.overlay(
-            video, vis, x="(main_w-overlay_w)/2", y="(main_h-overlay_h)/2",
+            video, vis, x="(main_w-overlay_w)/2", y=vis_y,
             eof_action="pass",
         )
 

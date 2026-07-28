@@ -177,6 +177,19 @@
           <input type="file" id="bg-image-input" accept=".png,.jpg,.jpeg,.webp,.bmp"
             class="hidden mt-2 w-full text-sm text-slate-400 file:bg-slate-800 file:border-0 file:text-slate-200 file:rounded-lg file:px-3 file:py-1.5 file:mr-3">
           <p id="bg-image-status" class="hidden text-xs text-emerald-400 mt-1"></p>
+          <div id="bg-motion-options" class="hidden mt-2 flex items-center gap-3">
+            <label class="inline-flex items-center gap-2 cursor-pointer shrink-0">
+              <input id="bg-motion" type="checkbox" class="w-4 h-4 accent-indigo-500">
+              <span class="text-sm">Motion (Ken Burns pan &amp; zoom)</span>
+            </label>
+            <select id="bg-motion-style" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" disabled>
+              <option value="zoom-in" selected>Slow zoom in</option>
+              <option value="zoom-out">Slow zoom out</option>
+              <option value="pan-left">Pan left to right</option>
+              <option value="pan-right">Pan right to left</option>
+              <option value="random">Random</option>
+            </select>
+          </div>
         </div>
 
         <div id="slideshow-options" class="hidden sm:col-span-2 bg-slate-800/40 border border-slate-800 rounded-lg p-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -225,6 +238,7 @@
               <select id="vis-type" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
                 <option value="showwaves">Waveform (showwaves)</option>
                 <option value="showfreqs">Frequency bars (showfreqs)</option>
+                <option value="showspectrum">Spectrum (showspectrum)</option>
               </select>
             </div>
             <div>
@@ -234,6 +248,13 @@
             <div>
               <label class="block text-sm text-slate-400 mb-1">Opacity: <span id="vis-opacity-label">100%</span></label>
               <input id="vis-opacity" type="range" min="0" max="100" value="100" class="w-full accent-indigo-500">
+            </div>
+            <div>
+              <label class="block text-sm text-slate-400 mb-1">Placement</label>
+              <select id="vis-placement" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+                <option value="center" selected>Center</option>
+                <option value="lower-third">Lower third</option>
+              </select>
             </div>
           </div>
         </div>
